@@ -13,6 +13,7 @@ import * as imaging from './imaging.js';
 import * as pdfs from './pdfs.js';
 import * as ocrLib from './ocr.js';
 import * as bridgeLib from './bridge.js';
+import * as qrLib from './qr.js';
 import * as store from './store.js';
 import { CameraCapture, cameraSupported } from './capture.js';
 
@@ -28,6 +29,7 @@ const cameras = { shots: [], devices: [] };
 
 export function mount() {
   cacheDom();
+  absorbBridgeTokenFromUrl();
   bindGlobal();
   bindAppBar();
   bindInspector();
@@ -1123,15 +1125,60 @@ function showRecognisedText() {
 
 /* ─────────────────────────────── scanner ─────────────────────────────── */
 
-const scannerState = { printer: null, caps: null };
+const scannerState = {
+  method: 'bridge',
+  client: null,
+  extension: null,
+  bridge: null,
+  caps: null,
+  printer: null,
+};
+
+const BRIDGE_KEY = 'scanlet:bridge';
+
+function rememberBridge() {
+  try {
+    localStorage.setItem(BRIDGE_KEY, JSON.stringify(store.state.bridge || {}));
+  } catch {
+    /* private mode; the session still works */
+  }
+}
+
+function recalledBridge() {
+  try {
+    const raw = localStorage.getItem(BRIDGE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A bridge can hand us its code through the URL it printed — that is how a
+ * phone gets paired by opening one link.
+ */
+function absorbBridgeTokenFromUrl() {
+  const fromHash = bridgeLib.tokenFromInput(location.hash || '');
+  if (!fromHash) return false;
+  store.state.bridge = { url: location.origin, token: fromHash };
+  rememberBridge();
+  history.replaceState(null, '', location.pathname + location.search);
+  return true;
+}
 
 function bindScanner() {
   ui.scanner = {
     modal: $('#modal-scanner'),
+    method: $('#scan-method'),
+    servedByBridge: $('#served-by-bridge'),
     status: $('#bridge-status'),
     dot: $('#bridge-dot'),
     url: $('#bridge-url'),
     connect: $('#bridge-connect'),
+    pairWrap: $('#bridge-pair-wrap'),
+    token: $('#bridge-token'),
+    pair: $('#bridge-pair'),
+    readQr: $('#bridge-read-qr'),
     list: $('#printer-list'),
     listWrap: $('#printer-list-wrap'),
     address: $('#printer-addr'),
@@ -1145,19 +1192,39 @@ function bindScanner() {
     format: $('#scan-format'),
     start: $('#scan-start'),
     hint: $('#scan-hint'),
+    shareToggle: $('#bridge-share-toggle'),
+    share: $('#bridge-share'),
+    shareQr: $('#bridge-qr'),
+    shareHint: $('#bridge-qr-hint'),
+    shareUrl: $('#bridge-qr-url'),
+    shareCopy: $('#bridge-qr-copy'),
+    extDot: $('#ext-dot'),
+    extStatus: $('#ext-status'),
+    qrModal: $('#modal-qr'),
+    qrVideo: $('#qr-video'),
+    helpHint: $('#bridge-pair-hint'),
   };
-  ui.scanner.url.value = store.state.bridge.url;
+
+  ui.scanner.url.value = store.state.bridge?.url || bridgeLib.DEFAULT_BRIDGE;
+  ui.scanner.readQr.hidden = !qrLib.qrReadingSupported();
 }
 
 async function openScanner() {
   openModal(ui.scanner.modal);
-  setBridgeStatus('busy', 'Looking for a local scanning bridge…');
-  try {
-    const info = await bridgeLib.probe(store.state.bridge.url);
-    onBridgeOnline(info.printers);
-  } catch (error) {
-    setBridgeStatus('bad', error.message);
+  setMethod(scannerState.method);
+  await refreshBridge();
+  if (!scannerState.bridge) await refreshExtension();
+}
+
+function setMethod(method) {
+  scannerState.method = method;
+  for (const button of $$('button', ui.scanner.method)) {
+    button.setAttribute('aria-checked', String(button.dataset.method === method));
   }
+  $('#method-bridge').hidden = method !== 'bridge';
+  $('#method-extension').hidden = method !== 'extension';
+  $('#method-address').hidden = method !== 'address';
+  if (method === 'extension') refreshExtension();
 }
 
 function setBridgeStatus(state, message) {
@@ -1165,54 +1232,171 @@ function setBridgeStatus(state, message) {
   ui.scanner.status.textContent = message;
 }
 
-function onBridgeOnline(printers) {
-  store.state.bridge.online = true;
-  store.state.bridge.printers = printers;
-  setBridgeStatus('ok', `Bridge connected — ${printers.length} device${printers.length === 1 ? '' : 's'} found`);
-  renderPrinterList(printers);
+function setExtStatus(state, message) {
+  ui.scanner.extDot.className = `dot ${state}`;
+  ui.scanner.extStatus.textContent = message;
+}
+
+function setScanHint(message) {
+  ui.scanner.hint.textContent = message || '';
+}
+
+/** Find the best bridge: this origin first, then loopback, then last used. */
+async function refreshBridge() {
+  setBridgeStatus('busy', 'Looking for a scanning bridge…');
+  let found = [];
+  try {
+    found = await bridgeLib.detectBridges({ remember: recalledBridge() });
+  } catch {
+    found = [];
+  }
+
+  const best = found[0];
+  if (!best) {
+    scannerState.bridge = null;
+    scannerState.client = null;
+    setBridgeStatus(
+      'bad',
+      'No bridge answered. Start one, or paste its address — it is one Node command.',
+    );
+    ui.scanner.pairWrap.hidden = true;
+    ui.scanner.shareToggle.hidden = true;
+    ui.scanner.share.hidden = true;
+    renderPrinterList([]);
+    return null;
+  }
+
+  scannerState.bridge = best;
+  store.state.bridge = { url: best.url, token: best.token || '' };
+  rememberBridge();
+  return applyBridge(best);
+}
+
+function applyBridge(info) {
+  ui.scanner.url.value = info.url;
+  ui.scanner.servedByBridge.hidden = !info.sameOrigin;
+  ui.scanner.shareToggle.hidden = !info.lan;
+
+  if (info.requiresToken && !info.paired) {
+    setBridgeStatus('bad', `Found a bridge at ${info.url}, but it needs a pairing code.`);
+    ui.scanner.pairWrap.hidden = false;
+    ui.scanner.share.hidden = true;
+    renderPrinterList([]);
+    return info;
+  }
+
+  ui.scanner.pairWrap.hidden = !info.requiresToken;
+  setBridgeStatus(
+    'ok',
+    `Connected to ${info.url}${info.lan ? ' — shared on your network' : ''}` +
+      ` · bridge ${info.version}`,
+  );
+  scannerState.client = new bridgeLib.BridgeClient(info.url, info.token || '');
+  renderPrinterList(info.printers || []);
+  renderShare(info);
+  // Refresh in the background: discovery on the bridge side takes a moment.
+  loadPrinters();
+  return info;
+}
+
+async function loadPrinters() {
+  const client = activeClient();
+  if (!client) return;
+  setBridgeStatus('busy', 'Looking for printers…');
+  try {
+    const printers = await client.discover();
+    renderPrinterList(printers);
+    const where = scannerState.bridge?.url || 'the extension';
+    setBridgeStatus('ok', `${printers.length} device${printers.length === 1 ? '' : 's'} via ${where}`);
+  } catch (error) {
+    if (scannerState.bridge) setBridgeStatus('bad', error.message);
+  }
+}
+
+function activeClient() {
+  if (scannerState.method === 'extension') return scannerState.extension;
+  if (scannerState.method === 'address') return scannerState.extension || scannerState.client;
+  return scannerState.client || scannerState.extension;
+}
+
+async function refreshExtension() {
+  const client = new bridgeLib.ExtensionClient();
+  const info = await client.probe();
+  if (!info) {
+    client.dispose();
+    scannerState.extension = null;
+    setExtStatus('bad', 'The extension is not installed or is disabled in this browser.');
+    return null;
+  }
+  scannerState.extension = client;
+  setExtStatus('ok', `Extension connected · version ${info.version}`);
+  if (scannerState.method === 'extension') {
+    try {
+      const printers = await client.discover({
+        onPrinter: (printer) => addPrinter(printer),
+      });
+      renderPrinterList(printers);
+      if (!printers.length) {
+        setExtStatus('busy', 'No printers answered yet. Add one by address.');
+      }
+    } catch (error) {
+      setExtStatus('bad', error.message);
+    }
+  }
+  return client;
 }
 
 function renderPrinterList(printers) {
   ui.scanner.listWrap.hidden = !printers.length;
   ui.scanner.list.textContent = '';
-  for (const printer of printers) {
-    const item = el('div', {
-      class: 'printer-item',
-      role: 'button',
-      tabindex: '0',
-      'aria-pressed': String(scannerState.printer?.id === printer.id),
-      onclick: () => selectPrinter(printer),
-    }, [
-      el('span', { html: '<svg viewBox="0 0 24 24"><path d="M6 9V4h12v5M6 18H5a2 2 0 01-2-2v-5a2 2 0 012-2h14a2 2 0 012 2v5a2 2 0 01-2 2h-1M6 15h12v6H6z"/></svg>' }),
-      el('span', {}, [
-        el('div', { class: 'p-name' }, printer.name || printer.address),
-        el('div', { class: 'p-meta' }, [printer.model, printer.address, printer.manual ? 'added by address' : 'Bonjour'].filter(Boolean).join(' · ')),
-      ]),
-    ]);
-    ui.scanner.list.append(item);
-  }
+  for (const printer of printers) addPrinter(printer);
+}
+
+function addPrinter(printer) {
+  ui.scanner.listWrap.hidden = false;
+  if (ui.scanner.list.querySelector(`[data-printer-id="${CSS.escape(printer.id)}"]`)) return;
+  const item = el('div', {
+    class: 'printer-item',
+    role: 'button',
+    tabindex: '0',
+    dataset: { printerId: printer.id },
+    'aria-pressed': String(scannerState.printer?.id === printer.id),
+    onclick: () => selectPrinter(printer),
+  }, [
+    el('span', { html: '<svg viewBox="0 0 24 24"><path d="M6 9V4h12v5M6 18H5a2 2 0 01-2-2v-5a2 2 0 012-2h14a2 2 0 012 2v5a2 2 0 01-2 2h-1M6 15h12v6H6z"/></svg>' }),
+    el('span', {}, [
+      el('div', { class: 'p-name' }, printer.name || printer.address),
+      el('div', { class: 'p-meta' },
+        [printer.model, printer.address && `${printer.address}:${printer.port}`,
+          printer.manual ? 'added by address' : printer.found ? 'found on this network' : 'Bonjour']
+          .filter(Boolean).join(' · ')),
+    ]),
+  ]);
+  ui.scanner.list.append(item);
 }
 
 async function selectPrinter(printer) {
   scannerState.printer = printer;
-  renderPrinterList(await bridgeLib.discover(store.state.bridge.url).catch(() => store.state.bridge.printers));
+  for (const item of $$('.printer-item', ui.scanner.list)) {
+    item.setAttribute('aria-pressed', String(item.dataset.printerId === printer.id));
+  }
   ui.scanner.options.hidden = false;
-  ui.scanner.hint.textContent = '';
+  setScanHint('Reading the device’s capabilities…');
+  const client = activeClient();
   try {
-    const caps = await bridgeLib.capabilities(store.state.bridge.url, printer.id);
+    const caps = await client.capabilities(printer.id);
     scannerState.caps = caps;
     fillScannerOptions(caps);
+    setScanHint('');
   } catch (error) {
-    ui.scanner.hint.textContent = error.message;
+    setScanHint(error.message);
   }
 }
 
 function fillScannerOptions(caps) {
   ui.scanner.source.textContent = '';
   for (const source of caps.sources || ['Platen']) {
-    ui.scanner.source.append(
-      el('option', { value: source }, source === 'Feeder' ? 'ADF / feeder' : 'Flatbed'),
-    );
+    ui.scanner.source.append(el('option', { value: source }, source === 'Feeder' ? 'ADF / feeder' : 'Flatbed'));
   }
   if ((caps.sources || []).includes('Feeder')) ui.scanner.source.value = 'Feeder';
 
@@ -1224,20 +1408,120 @@ function fillScannerOptions(caps) {
 
   ui.scanner.res.textContent = '';
   const resolutions = caps.resolutions?.length ? caps.resolutions : [75, 150, 200, 300, 600];
-  for (const dpi of resolutions) {
-    ui.scanner.res.append(el('option', { value: String(dpi) }, `${dpi} dpi`));
-  }
+  for (const dpi of resolutions) ui.scanner.res.append(el('option', { value: String(dpi) }, `${dpi} dpi`));
   if (resolutions.includes(300)) ui.scanner.res.value = '300';
 
   ui.scanner.duplex.disabled = !caps.duplex;
   if (!caps.duplex) ui.scanner.duplex.value = 'false';
-  ui.scanner.hint.textContent = caps.duplex
-    ? 'This device reports duplex support.'
-    : 'No duplex reported by this device.';
+}
+
+async function connectToTypedBridge() {
+  const url = bridgeLib.normaliseBridgeUrl(ui.scanner.url.value) || bridgeLib.DEFAULT_BRIDGE;
+  const token = bridgeLib.tokenFromInput(ui.scanner.token.value) || store.state.bridge?.token || '';
+  store.state.bridge = { url, token };
+  rememberBridge();
+  setBridgeStatus('busy', `Connecting to ${url}…`);
+  const info = await refreshBridge();
+  if (!info) return;
+  if (info.requiresToken && !info.paired) {
+    setBridgeStatus('bad', `${url} needs a pairing code — paste it below.`);
+    ui.scanner.pairWrap.hidden = false;
+    return;
+  }
+  await loadPrinters();
+}
+
+async function pairBridge() {
+  const token = bridgeLib.tokenFromInput(ui.scanner.token.value) || ui.scanner.token.value.trim();
+  if (!token) {
+    setBridgeStatus('bad', 'Paste the pairing code first.');
+    return;
+  }
+  store.state.bridge = {
+    url: bridgeLib.normaliseBridgeUrl(ui.scanner.url.value) || store.state.bridge?.url || bridgeLib.DEFAULT_BRIDGE,
+    token,
+  };
+  rememberBridge();
+  setBridgeStatus('busy', 'Pairing…');
+  const info = await refreshBridge();
+  if (info?.paired) {
+    ui.scanner.token.value = '';
+    await loadPrinters();
+    toast('Paired with the bridge');
+  } else if (info) {
+    setBridgeStatus('bad', 'That code was not accepted. Check it and try again.');
+  }
+}
+
+/** Show a QR code so a phone can join with one scan. */
+async function renderShare(info) {
+  if (!info.lan) {
+    ui.scanner.share.hidden = true;
+    return;
+  }
+  ui.scanner.share.hidden = window.innerWidth < 900;
+  const host = info.addresses?.[0] || location.hostname;
+  const scheme = info.url.startsWith('https') ? 'https' : 'http';
+  const url = `${scheme}://${host}:${info.port}/${info.token ? `#s=${info.token}` : ''}`;
+  ui.scanner.shareUrl.value = url;
+  ui.scanner.shareHint.textContent = info.token
+    ? 'The link carries the pairing code, so the other device needs no setup.'
+    : 'This bridge has no pairing code, so anyone on your network can use it.';
+  try {
+    const { dataUrl } = await qrLib.renderQr(url, { size: 180 });
+    ui.scanner.shareQr.src = dataUrl;
+    ui.scanner.shareQr.hidden = false;
+  } catch {
+    ui.scanner.shareQr.hidden = true;
+  }
+}
+
+async function readPairingQr() {
+  if (!qrLib.qrReadingSupported()) return;
+  openModal(ui.scanner.qrModal);
+  setScanHint('');
+  try {
+    const text = await qrLib.readQr({ video: ui.scanner.qrVideo });
+    closeModal(ui.scanner.qrModal);
+    const url = bridgeLib.normaliseBridgeUrl(text);
+    const token = bridgeLib.tokenFromInput(text);
+    if (!url || !token) throw new Error('That code does not look like a Scanlet bridge link.');
+    store.state.bridge = { url, token };
+    rememberBridge();
+    ui.scanner.url.value = url;
+    ui.scanner.token.value = token;
+    await pairBridge();
+  } catch (error) {
+    closeModal(ui.scanner.qrModal);
+    toast(error.message, { kind: 'err', timeout: 6000 });
+  }
+}
+
+async function probeByAddress() {
+  const address = ui.scanner.address.value.trim();
+  if (!address) return;
+  const client = activeClient();
+  if (!client) {
+    setScanHint('Add a printer by address through the bridge or the extension.');
+    return;
+  }
+  setScanHint(`Asking ${address}…`);
+  try {
+    const result = await client.probeAddress(address);
+    const printer = result.printer || result;
+    addPrinter(printer);
+    await selectPrinter(printer);
+    toast(`Added ${printer.address}`);
+  } catch (error) {
+    setScanHint(error.message);
+  }
 }
 
 async function startScan() {
-  if (!scannerState.printer) return;
+  const printer = scannerState.printer;
+  const client = activeClient();
+  if (!printer || !client) return;
+
   const options = {
     resolution: Number(ui.scanner.res.value) || 200,
     colorMode: ui.scanner.color.value,
@@ -1246,9 +1530,13 @@ async function startScan() {
     format: ui.scanner.format.value,
     pageSize: ui.scanner.size.value,
   };
+
   ui.scanner.start.disabled = true;
+  setScanHint('Waiting for the scanner…');
   try {
-    let pages = await bridgeLib.scan(store.state.bridge.url, scannerState.printer.id, options);
+    const pages = await client.scan(printer.id, options, {
+      onProgress: (index, total) => setScanHint(`Receiving page ${index}${total ? ` of ${total}` : ''}…`),
+    });
     if (!pages.length) throw new Error('The scanner returned no pages.');
 
     let dropped = 0;
@@ -1256,7 +1544,9 @@ async function startScan() {
       for (const [index, part] of pages.entries()) {
         update(index / pages.length, `Page ${index + 1} of ${pages.length}`);
         if (part.mime === 'application/pdf') {
-          const rendered = await pdfs.importPdfFile(new File([part.blob], 'scan.pdf', { type: 'application/pdf' }));
+          const rendered = await pdfs.importPdfFile(
+            new File([part.blob], 'scan.pdf', { type: 'application/pdf' }),
+          );
           for (const item of rendered) await addCanvasPage(item.canvas, { source: 'scanner' });
           continue;
         }
@@ -1276,9 +1566,14 @@ async function startScan() {
         });
       }
     });
-    pages = null;
-    toast(`Scanned from ${scannerState.printer.name || 'the printer'}${dropped ? ` — skipped ${dropped} blank sheet${dropped === 1 ? '' : 's'}` : ''}`);
+
+    setScanHint('');
+    toast(
+      `Scanned ${pages.length - dropped} page${pages.length - dropped === 1 ? '' : 's'} from ` +
+        `${printer.name || 'the printer'}${dropped ? ` — skipped ${dropped} blank sheet${dropped === 1 ? '' : 's'}` : ''}`,
+    );
   } catch (error) {
+    setScanHint('');
     toast(error.message, { kind: 'err', timeout: 7000 });
   } finally {
     ui.scanner.start.disabled = false;
@@ -1774,34 +2069,23 @@ function bindModals() {
   $('#exp-preset-archive').addEventListener('click', () => applyPreset('archive'));
   $('#exp-preset-small').addEventListener('click', () => applyPreset('small'));
 
-  $('#bridge-connect').addEventListener('click', async () => {
-    const url = ui.scanner.url.value.trim() || bridgeLib.DEFAULT_BRIDGE;
-    store.state.bridge.url = url;
-    setBridgeStatus('busy', 'Connecting…');
-    try {
-      const info = await bridgeLib.probe(url);
-      onBridgeOnline(await bridgeLib.discover(url).catch(() => info.printers));
-    } catch (error) {
-      setBridgeStatus('bad', error.message);
-    }
+  $('#bridge-connect').addEventListener('click', connectToTypedBridge);
+  $('#bridge-pair').addEventListener('click', pairBridge);
+  $('#bridge-read-qr').addEventListener('click', readPairingQr);
+  $('#bridge-share-toggle').addEventListener('click', () => {
+    ui.scanner.share.hidden = !ui.scanner.share.hidden;
   });
-
-  $('#printer-probe').addEventListener('click', async () => {
-    const address = ui.scanner.address.value.trim();
-    if (!address) return;
-    setBridgeStatus('busy', `Asking ${address}…`);
-    try {
-      const { printer } = await bridgeLib.probeAddress(store.state.bridge.url, address);
-      setBridgeStatus('ok', `Added ${printer.address}:${printer.port}`);
-      const printers = await bridgeLib.discover(store.state.bridge.url).catch(() => [printer]);
-      renderPrinterList(printers);
-      await selectPrinter(printer);
-    } catch (error) {
-      setBridgeStatus('bad', error.message);
-    }
+  $('#bridge-qr-copy').addEventListener('click', async () => {
+    await navigator.clipboard.writeText(ui.scanner.shareUrl.value);
+    toast('Link copied');
   });
-
+  $('#printer-probe').addEventListener('click', probeByAddress);
   $('#scan-start').addEventListener('click', startScan);
+  $('#ext-recheck').addEventListener('click', refreshExtension);
+  ui.scanner.method.addEventListener('click', (event) => {
+    const method = event.target.closest('button')?.dataset.method;
+    if (method) setMethod(method);
+  });
   $('#btn-bridge-help').addEventListener('click', () => openModal($('#modal-help')));
   $('#help-copy').addEventListener('click', async () => {
     await navigator.clipboard.writeText($('#help-cmd').textContent);

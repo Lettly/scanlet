@@ -4,28 +4,41 @@
  * =======================
  *
  * A browser cannot open a socket to a printer, so network scanning needs a
- * helper running on your own machine. This is that helper — one file, no
+ * helper running somewhere on your network. This is that helper — one file, no
  * dependencies, Node 18+.
  *
- *   node scanlet-bridge.mjs            # listen on 127.0.0.1:8787
- *   node scanlet-bridge.mjs --port 9000 --host 127.0.0.1
+ *   node scanlet-bridge.mjs                    # this machine only (127.0.0.1)
+ *   node scanlet-bridge.mjs --lan              # also serve Scanlet to your phone
+ *   node scanlet-bridge.mjs --lan --tls        # …over https, so the camera and
+ *                                              # PWA install work on mobile too
  *
- * It discovers scanners advertised over Bonjour/mDNS (`_uscan._tcp`,
- * `_uscans._tcp`, `_scanner._tcp`) and drives them with eSCL — the same
- * driverless protocol Apple AirScan and SANE's `escl` backend use. Nothing
- * leaves your network: the HTTP API is bound to the loopback interface only.
+ * In the default mode it is a private helper: bound to the loopback interface,
+ * reachable only by Scanlet running on the same machine. With `--lan` it becomes
+ * a small scan server that also serves the Scanlet app itself, so any device on
+ * your network — a phone, a tablet — can open it and scan, with no install and
+ * no mixed-content problems. Access is gated by a pairing token.
+ *
+ * It discovers scanners over Bonjour/mDNS (`_uscan._tcp`, `_uscans._tcp`,
+ * `_scanner._tcp`) and drives them with eSCL — the driverless protocol Apple
+ * AirScan and SANE's `escl` backend use.
  */
 
 import http from 'node:http';
 import https from 'node:https';
 import dgram from 'node:dgram';
 import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const MDNS_ADDR = '224.0.0.251';
 const MDNS_PORT = 5353;
 const SERVICE_TYPES = ['_uscan._tcp.local', '_uscans._tcp.local', '_scanner._tcp.local'];
+const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 /* ───────────────────────────── mDNS ───────────────────────────── */
 
@@ -225,7 +238,7 @@ export function summarise(records) {
       note: properties.note || '',
       address,
       port: target.port || (secure ? 443 : 80),
-      path: secure ? '/eSCL' : '/eSCL',
+      path: '/eSCL',
       secure,
       tls: secure,
       resolutions: (properties.rs || '').split(',').filter(Boolean).map(Number),
@@ -284,14 +297,32 @@ function httpRequest(url, { method = 'GET', headers = {}, body = null, timeout =
   });
 }
 
-function parseXmlAttributes(xml, tag) {
-  const block = new RegExp(`<[^>]*${tag}[^>]*>([\\s\\S]*?)<\\/[^>]*${tag}>`, 'i').exec(xml);
-  return block ? block[1] : '';
-}
-
 function numericTag(xml, tag) {
   const match = new RegExp(`<[^>]*${tag}[^>]*>\\s*(\\d+)\\s*<`, 'i').exec(xml);
   return match ? Number(match[1]) : null;
+}
+
+function allOfTag(xml, tag) {
+  return [...xml.matchAll(new RegExp(`<[^>]*${tag}[^>]*>\\s*(\\d+)\\s*<`, 'gi'))].map((m) => Number(m[1]));
+}
+
+/**
+ * Maximum page extent per input source, in eSCL's 1/300-inch units. A device
+ * usually allows a longer sheet in the feeder than on the glass, and asking for
+ * a region larger than a source supports gets the job rejected.
+ */
+function sourceMaxima(xml) {
+  const maxima = {};
+  const read = (tag, key) => {
+    const section = new RegExp(`<[^>]*${tag}[\\s>][\\s\\S]*?</[^>]*${tag}>`, 'i').exec(xml);
+    if (!section) return;
+    const maxWidth = numericTag(section[0], 'MaxWidth');
+    const maxHeight = numericTag(section[0], 'MaxHeight');
+    if (maxWidth || maxHeight) maxima[key] = { maxWidth, maxHeight };
+  };
+  read('Platen', 'Platen');
+  read('Adf', 'Feeder');
+  return maxima;
 }
 
 /** Read ScannerCapabilities and boil it down to what the UI needs. */
@@ -309,8 +340,6 @@ export async function capabilities(printer) {
   const resolutions = [...xml.matchAll(/<[^>]*XResolution[^>]*>\s*(\d+)\s*</g)].map((m) => Number(m[1]));
 
   const unique = (list) => [...new Set(list)];
-  const maxWidth = numericTag(xml, 'MaxWidth') || 2550;
-  const maxHeight = numericTag(xml, 'MaxHeight') || 3300;
 
   return {
     sources: sources.length ? unique(sources) : ['Platen'],
@@ -318,33 +347,41 @@ export async function capabilities(printer) {
     formats: unique(formats).length ? unique(formats) : ['image/jpeg'],
     resolutions: unique(resolutions).filter(Boolean).sort((a, b) => a - b),
     duplex: /<[^>]*Duplex[^>]*>\s*true\s*</i.test(xml),
-    maxWidth,
-    maxHeight,
+    maxima: sourceMaxima(xml),
+    maxWidth: Math.max(2550, ...allOfTag(xml, 'MaxWidth')),
+    maxHeight: Math.max(3300, ...allOfTag(xml, 'MaxHeight')),
   };
 }
 
 function scanSettingsXml(printer, options, caps) {
   const resolution = Number(options.resolution) || 200;
-  const regionWidth = Math.round(((caps.maxWidth || 2550) / 300) * resolution);
-  const regionHeight = Math.round(((caps.maxHeight || 3300) / 300) * resolution);
   const inputSource = options.inputSource === 'Feeder' ? 'Feeder' : 'Platen';
   const colorMode = options.colorMode || 'RGB24';
   const format = options.format || 'image/jpeg';
   const duplex = options.duplex === true || options.duplex === 'true' ? 'true' : 'false';
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<scan:ScanSettings xmlns:scan="http://schemas.hp.com/imaging/escl/2011/05/03" xmlns:pwg="http://www.pwg.org/schemas/2010/12/sm">
-  <pwg:Version>2.0</pwg:Version>
-  <pwg:ScanRegions>
+  // eSCL measures the region in 1/300-inch units whatever the resolution is, so
+  // the device's own maximum is passed through untouched; when no maximum is
+  // known, no region is sent and the device uses its default page.
+  const source = caps.maxima?.[inputSource];
+  const regions =
+    source?.maxWidth && source?.maxHeight
+      ? `  <pwg:ScanRegions>
     <pwg:ScanRegion>
       <pwg:XOffset>0</pwg:XOffset>
       <pwg:YOffset>0</pwg:YOffset>
-      <pwg:Width>${regionWidth}</pwg:Width>
-      <pwg:Height>${regionHeight}</pwg:Height>
+      <pwg:Width>${source.maxWidth}</pwg:Width>
+      <pwg:Height>${source.maxHeight}</pwg:Height>
       <pwg:ContentRegionUnits>escl:ThreeHundredthsOfInches</pwg:ContentRegionUnits>
     </pwg:ScanRegion>
   </pwg:ScanRegions>
-  <pwg:InputSource>${inputSource}</pwg:InputSource>
+`
+      : '';
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<scan:ScanSettings xmlns:scan="http://schemas.hp.com/imaging/escl/2011/05/03" xmlns:pwg="http://www.pwg.org/schemas/2010/12/sm">
+  <pwg:Version>2.0</pwg:Version>
+${regions}  <pwg:InputSource>${inputSource}</pwg:InputSource>
   <scan:ColorMode>${colorMode}</scan:ColorMode>
   <scan:XResolution>${resolution}</scan:XResolution>
   <scan:YResolution>${resolution}</scan:YResolution>
@@ -396,13 +433,20 @@ export async function probeAddress(address) {
   const cleaned = String(address || '').trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
   if (!cleaned) throw new Error('Enter an address such as 192.168.1.42 or 192.168.1.42:8080.');
   const [host, portPart] = cleaned.split('/')[0].split(':');
-  const port = Number(portPart) || 80;
   const candidates = [
-    { secure: false, port, path: '/eSCL' },
-    { secure: false, port, path: '' },
+    { secure: false, port: Number(portPart) || 80, path: '/eSCL' },
+    { secure: false, port: Number(portPart) || 80, path: '' },
   ];
   for (const candidate of candidates) {
-    const printer = { id: `manual:${host}:${candidate.port}`, name: host, model: '', note: '', address: host, ...candidate, manual: true };
+    const printer = {
+      id: `manual:${host}:${candidate.port}`,
+      name: host,
+      model: '',
+      note: '',
+      address: host,
+      ...candidate,
+      manual: true,
+    };
     try {
       const caps = await capabilities(printer);
       return { printer, caps };
@@ -413,13 +457,96 @@ export async function probeAddress(address) {
   throw new Error(`No eSCL scanner answered at ${cleaned}.`);
 }
 
+/* ───────────────────────────── pairing ───────────────────────────── */
+
+export function createToken() {
+  return crypto.randomBytes(9).toString('base64url');
+}
+
+/** Constant-time-ish comparison so a token cannot be guessed by timing. */
+function sameToken(a, b) {
+  if (!a || !b) return false;
+  const left = Buffer.from(String(a));
+  const right = Buffer.from(String(b));
+  if (left.length !== right.length) return false;
+  try {
+    return crypto.timingSafeEqual(left, right);
+  } catch {
+    return false;
+  }
+}
+
+function tokenFrom(request, url) {
+  return request.headers['x-scanlet-token'] || url.searchParams.get('token') || '';
+}
+
+/* ───────────────────────────── static files ───────────────────────────── */
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.txt': 'text/plain; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
+  '.woff2': 'font/woff2',
+  '.map': 'application/json; charset=utf-8',
+};
+
+/** Serve a file from `root`, refusing anything that escapes it. */
+export function serveStatic(root, urlPath, response, { head = false } = {}) {
+  if (!root) return false;
+  const clean = decodeURIComponent(urlPath.split('?')[0]);
+  const relative = clean === '/' || clean === '' ? 'index.html' : clean.replace(/^\/+/, '');
+
+  // Never serve dotfiles: that is where .git, .env and friends live.
+  if (relative.split('/').some((segment) => segment.startsWith('.') && segment !== '.')) return false;
+
+  const target = path.resolve(root, relative);
+  const resolvedRoot = path.resolve(root);
+  const rootWithSep = resolvedRoot + path.sep;
+  if (target !== path.join(resolvedRoot, 'index.html') && !target.startsWith(rootWithSep)) return false;
+
+  let stats;
+  try {
+    stats = fs.statSync(target);
+  } catch {
+    return false;
+  }
+  if (stats.isDirectory()) return serveStatic(root, path.join(relative, 'index.html'), response);
+
+  const type = MIME[path.extname(target).toLowerCase()] || 'application/octet-stream';
+  // This server is on your own network and the files are small, so always let
+  // the browser revalidate: a stale asset here is far more annoying than a
+  // refetch. The shell and the worker must never be stale at all.
+  const noCache = /(^|\/)(index\.html|sw\.js|manifest\.webmanifest)$/.test(relative);
+  response.writeHead(200, {
+    'content-type': type,
+    'content-length': stats.size,
+    'cache-control': noCache ? 'no-store' : 'no-cache',
+  });
+  if (head) {
+    response.end();
+    return true;
+  }
+  fs.createReadStream(target).pipe(response);
+  return true;
+}
+
 /* ───────────────────────────── HTTP API ───────────────────────────── */
 
 function corsHeaders(extra = {}) {
   return {
     'access-control-allow-origin': '*',
     'access-control-allow-methods': 'GET,POST,OPTIONS',
-    'access-control-allow-headers': 'content-type',
+    'access-control-allow-headers': 'content-type, x-scanlet-token',
     // Chrome's Local Network Access preflight
     'access-control-allow-private-network': 'true',
     ...extra,
@@ -449,7 +576,14 @@ function readBody(request) {
   });
 }
 
-export function createServer({ log = () => {} } = {}) {
+/**
+ * The request handler, shared by the http and https servers.
+ * @param {object} options
+ * @param {(message:string)=>void} [options.log]
+ * @param {string} [options.token]   when set, every device/scan route needs it
+ * @param {string} [options.appDir]  directory to serve the Scanlet app from
+ */
+export function createHandler({ log = () => {}, token = '', appDir = '', lan = false, port = 0 } = {}) {
   let cache = { at: 0, printers: [], caps: new Map() };
   const manual = new Map(); // id → printer, added by address
 
@@ -464,24 +598,66 @@ export function createServer({ log = () => {} } = {}) {
 
   const allPrinters = async () => [...manual.values(), ...(await listPrinters())];
 
-  return http.createServer(async (request, response) => {
+  /** Cheap, cache-only view — used by /health so probing stays instant. */
+  const cachedPrinters = () => [...manual.values(), ...cache.printers];
+
+  async function findPrinter(id) {
+    const decoded = decodeURIComponent(id);
+    if (manual.has(decoded)) return manual.get(decoded);
+    let printers = cache.printers;
+    if (!printers.find((printer) => printer.id === decoded)) printers = await listPrinters();
+    const printer = printers.find((candidate) => candidate.id === decoded);
+    if (!printer) throw new Error('That device is no longer on the network. Scan for printers again.');
+    return printer;
+  }
+
+  return async function handle(request, response) {
     if (request.method === 'OPTIONS') {
       response.writeHead(204, corsHeaders());
       return response.end();
     }
 
-    const url = new URL(request.url, 'http://127.0.0.1');
+    const url = new URL(request.url, 'http://localhost');
     const parts = url.pathname.split('/').filter(Boolean);
-    log(`${request.method} ${url.pathname}`);
+    const authorised = !token || sameToken(tokenFrom(request, url), token);
+    const hostPort = Number((request.headers.host || '').split(':')[1]) || port;
 
     try {
+      // ── liveness: always open, and deliberately cheap so probing is instant ──
       if (url.pathname === '/health') {
-        const printers = await allPrinters();
-        return sendJson(response, 200, { ok: true, version: VERSION, printers });
+        return sendJson(response, 200, {
+          ok: true,
+          version: VERSION,
+          lan,
+          requiresToken: Boolean(token),
+          paired: authorised,
+          app: Boolean(appDir),
+          // LAN addresses let a paired client show a QR code for another device.
+          addresses: authorised ? interfaceAddresses() : [],
+          port: hostPort,
+          printers: authorised ? cachedPrinters() : [],
+        });
+      }
+
+      // ── the app itself is public: a phone has to load it *before* it can
+      //    present the pairing code it was given ──
+      const isApi = /^\/(health|printers|probe)(\/|$)/.test(url.pathname);
+      const isRead = request.method === 'GET' || request.method === 'HEAD';
+      if (isRead && appDir && !isApi) {
+        if (serveStatic(appDir, url.pathname, response, { head: request.method === 'HEAD' })) {
+          return undefined;
+        }
+        return sendJson(response, 404, { error: 'Not found' });
+      }
+
+      if (!authorised) {
+        return sendJson(response, 401, {
+          error: 'This bridge needs a pairing code. Open the address shown by the bridge, including its #code.',
+          requiresToken: true,
+        });
       }
 
       if (url.pathname === '/printers') {
-        const printers = await allPrinters();
         if (url.searchParams.has('refresh')) await listPrinters({ force: true });
         return sendJson(response, 200, { printers: await allPrinters() });
       }
@@ -535,38 +711,138 @@ export function createServer({ log = () => {} } = {}) {
       log(`error: ${error.message}`);
       return sendJson(response, 502, { error: error.message });
     }
-  });
+  };
+}
 
-  async function findPrinter(id) {
-    const decoded = decodeURIComponent(id);
-    if (manual.has(decoded)) return manual.get(decoded);
-    let printers = cache.printers;
-    if (!printers.find((printer) => printer.id === decoded)) printers = await listPrinters();
-    const printer = printers.find((candidate) => candidate.id === decoded);
-    if (!printer) throw new Error('That device is no longer on the network. Scan for printers again.');
-    return printer;
+/** Convenience wrapper for the common case. */
+export function createServer(options = {}) {
+  return http.createServer(createHandler(options));
+}
+
+/* ───────────────────────────── tls ───────────────────────────── */
+
+/**
+ * Generate a self-signed certificate with openssl. Browsers warn once, but an
+ * https origin is a *secure context*: that is what makes the camera, the
+ * service worker and PWA installation work on a phone.
+ */
+function ensureCertificate(dir, host) {
+  const keyPath = path.join(dir, 'scanlet-key.pem');
+  const certPath = path.join(dir, 'scanlet-cert.pem');
+  if (fs.existsSync(keyPath) && fs.existsSync(certPath)) return { keyPath, certPath };
+  fs.mkdirSync(dir, { recursive: true });
+  const addresses = [...new Set([host, ...interfaceAddresses()])].filter(Boolean);
+  const altNames = ['DNS:localhost', ...addresses.map((ip) => `IP:${ip}`)].join(',');
+  try {
+    execFileSync('openssl', [
+      'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+      '-keyout', keyPath, '-out', certPath,
+      '-days', '825',
+      '-subj', '/CN=Scanlet Bridge',
+      '-addext', `subjectAltName=${altNames}`,
+    ], { stdio: 'pipe' });
+  } catch (error) {
+    throw new Error(
+      `Could not create a certificate (is openssl installed?): ${error.message.split('\n')[0]}`,
+    );
   }
+  return { keyPath, certPath };
 }
 
 /* ───────────────────────────── entry point ───────────────────────────── */
+
+function resolveAppDir(explicit) {
+  const candidates = explicit ? [explicit] : [path.resolve(HERE, '..')];
+  for (const candidate of candidates) {
+    try {
+      if (fs.existsSync(path.join(candidate, 'index.html'))) return path.resolve(candidate);
+    } catch {
+      /* keep looking */
+    }
+  }
+  return '';
+}
 
 function main() {
   const { values } = parseArgs({
     options: {
       port: { type: 'string', default: '8787' },
-      host: { type: 'string', default: '127.0.0.1' },
+      host: { type: 'string', default: '' },
+      lan: { type: 'boolean', default: false },
+      tls: { type: 'boolean', default: false },
+      token: { type: 'string', default: '' },
+      app: { type: 'string', default: '' },
+      'no-serve': { type: 'boolean', default: false },
       quiet: { type: 'boolean', default: false },
     },
     allowPositionals: true,
   });
 
   const log = values.quiet ? () => {} : (message) => console.log(`[scanlet] ${message}`);
-  const server = createServer({ log });
+  const lan = values.lan;
+  const host = values.host || (lan ? '0.0.0.0' : '127.0.0.1');
+  const port = Number(values.port) || 8787;
+  const token = values.token || (lan ? createToken() : '');
+  const appDir = values['no-serve'] ? '' : resolveAppDir(values.app);
 
-  server.listen(Number(values.port), values.host, () => {
+  if (values.app && !appDir) {
+    console.error(`Scanlet: no index.html in ${values.app} — not serving the app.`);
+  }
+
+  let server;
+  let scheme = 'http';
+  const handler = createHandler({ log, token, appDir, lan, port });
+  if (values.tls) {
+    try {
+      const { keyPath, certPath } = ensureCertificate(path.join(HERE, '.certs'), '127.0.0.1');
+      server = https.createServer(
+        { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) },
+        handler,
+      );
+      scheme = 'https';
+    } catch (error) {
+      console.error(`Scanlet: ${error.message}`);
+      console.error('Scanlet: continuing over http instead.');
+      server = http.createServer(handler);
+    }
+  } else {
+    server = http.createServer(handler);
+  }
+
+  const addresses = interfaceAddresses();
+  const printUrl = (address) => `${scheme}://${address}:${port}/${token ? `#s=${token}` : ''}`;
+
+  server.listen(port, host, () => {
     console.log(`Scanlet bridge ${VERSION}`);
-    console.log(`Listening on http://${values.host}:${values.port}`);
-    console.log('Open Scanlet, press “Scanner”, then “Connect”. Ctrl-C to stop.');
+    console.log(`Listening on ${scheme}://${host}:${port}`);
+    if (appDir) {
+      console.log('');
+      console.log('  Open Scanlet on this machine:  ' + printUrl('127.0.0.1'));
+      if (lan) {
+        console.log('  Open Scanlet on your phone:    ' + printUrl(addresses[0] || '<your-lan-ip>'));
+        if (addresses.length > 1) {
+          for (const address of addresses.slice(1)) console.log(`                                 ${printUrl(address)}`);
+        }
+        console.log('');
+        console.log('  The link carries a pairing code. Anyone on your network with it can');
+        console.log('  reach your printers, so treat it like a password.');
+        if (values.tls) {
+          console.log('');
+          console.log('  Your browser will warn about the self-signed certificate once —');
+          console.log('  accept it, and the camera, service worker and PWA install all work.');
+        } else if (lan) {
+          console.log('');
+          console.log('  Over http, a phone cannot use its camera or install the PWA');
+          console.log('  (browsers require https for both). Scanning works either way;');
+          console.log('  add --tls for the full experience.');
+        }
+      } else {
+        console.log('  (add --lan to also serve it to your phone)');
+      }
+      console.log('');
+    } else {
+      console.log('Open Scanlet, press “Scanner”, then “Connect”. Ctrl-C to stop.');
+    }
     log('looking for scanners over Bonjour…');
     discover({ timeout: 2500 })
       .then((records) => {

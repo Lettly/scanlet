@@ -18,6 +18,9 @@ async function waitForEngines(timeoutMs = 8000) {
 async function registerWorker() {
   if (!('serviceWorker' in navigator)) return;
   if (location.protocol === 'file:') return;
+  // Browsers only allow a service worker in a secure context. A bridge served
+  // over plain http on a LAN address is not one, so skip it quietly.
+  if (!window.isSecureContext) return;
   try {
     const registration = await navigator.serviceWorker.register('sw.js');
     registration.addEventListener('updatefound', () => {});

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Scanlet bridge — options</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; padding: 28px; font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif; max-width: 720px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.lead { color: #6b7280; margin-top: 0; }
+  section { border-top: 1px solid currentColor; border-top-color: color-mix(in srgb, currentColor 15%, transparent); padding: 18px 0; }
+  h2 { font-size: 14px; margin: 0 0 8px; }
+  .status { display: flex; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 10px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #9ca3af; }
+  .dot.ok { background: #16a34a; } .dot.bad { background: #dc2626; } .dot.busy { background: #d97706; }
+  button { font: inherit; padding: 7px 12px; border-radius: 8px; border: 1px solid color-mix(in srgb, currentColor 22%, transparent); background: transparent; cursor: pointer; }
+  button.primary { background: #4f46e5; border-color: #4f46e5; color: #fff; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  input { font: inherit; padding: 7px 9px; border-radius: 8px; border: 1px solid color-mix(in srgb, currentColor 22%, transparent); background: transparent; width: 100%; box-sizing: border-box; }
+  ul { padding-left: 20px; } li { margin-bottom: 4px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; background: color-mix(in srgb, currentColor 8%, transparent); padding: 1px 5px; border-radius: 5px; }
+  .found li { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; }
+  .grid { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+</style>
+</head>
+<body>
+
+<h1>Scanlet bridge</h1>
+<p class="lead">Lets Scanlet on this computer reach eSCL / AirScan printers directly — no local
+server, no drivers. Whenever you are not using it, the extension sits idle.</p>
+
+<section>
+  <h2>Network access</h2>
+  <div class="status"><span class="dot" id="perm-dot"></span><span id="perm-text">Checking…</span></div>
+  <p class="lead" id="perm-explain">To talk to a printer, the extension needs permission to reach
+  addresses on your local network. Without it, nothing is probed and nothing is sent anywhere.</p>
+  <button class="primary" id="grant">Grant network access</button>
+  <button id="revoke">Revoke</button>
+</section>
+
+<section>
+  <h2>Where to look</h2>
+  <p class="lead">Printers are found by asking addresses on your network. List the <code>/24</code>
+  prefixes to sweep, or leave it empty to use the two most common home networks.</p>
+  <div class="grid">
+    <input id="subnets" placeholder="192.168.1, 192.168.0, 10.0.0" />
+    <button id="save">Save</button>
+  </div>
+  <p class="lead" id="detected" style="margin-top:8px"></p>
+  <button id="find">Find printers now</button>
+  <p class="lead" id="progress"></p>
+  <ul class="found" id="found"></ul>
+</section>
+
+<section>
+  <h2>Then</h2>
+  <p class="lead">Open Scanlet, choose <strong>Scanner → Browser extension</strong>, and press
+  <strong>Scan</strong>. If a printer is missed, add it by address there — the extension will ask
+  for permission for that one device only.</p>
+</section>
+
+<script type="module" src="src/options.js"></script>
+</body>
+</html>

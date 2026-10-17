@@ -1,113 +1,182 @@
-/* Scanlet — optional scanning bridge.
+/* Scanlet — clients for the two ways to reach a printer.
  *
- * A browser cannot open a socket to a printer, so real network scanning needs a
- * helper on the machine. `bridge/scanlet-bridge.mjs` in this repository is that
- * helper: it discovers eSCL/AirScan devices over Bonjour and exposes a tiny
- * CORS-enabled HTTP API on 127.0.0.1. Everything else in Scanlet works without it.
+ * 1. `BridgeClient` talks to the scanning bridge, a small Node process that runs
+ *    either on this machine (http://127.0.0.1:8787) or on your network, in which
+ *    case it also serves this app and you reach it at its own origin.
+ * 2. `ExtensionClient` talks to the optional browser extension, which reaches
+ *    eSCL printers directly thanks to its host permissions — no local server.
+ *
+ * Everything else in Scanlet works with neither of them.
  */
 
 export const DEFAULT_BRIDGE = 'http://127.0.0.1:8787';
 
-async function request(url, { path, method = 'GET', body = null, timeout = 4000, raw = false } = {}) {
+/** Normalise a user-typed bridge address into an origin. */
+export function normaliseBridgeUrl(input) {
+  let value = String(input || '').trim();
+  if (!value) return '';
+  if (!/^https?:\/\//i.test(value)) value = `http://${value}`;
+  try {
+    const url = new URL(value);
+    return `${url.protocol}//${url.host}`;
+  } catch {
+    return '';
+  }
+}
+
+/** Pull a pairing code out of `#s=…`, `?token=…` or plain text. */
+export function tokenFromInput(input) {
+  const value = String(input || '').trim();
+  if (!value) return '';
+  const match = /[#?&](?:s|token|code)=([^&\s]+)/i.exec(value);
+  if (match) return decodeURIComponent(match[1]);
+  if (/^[\w-]{6,64}$/.test(value)) return value;
+  return '';
+}
+
+class RequestError extends Error {
+  constructor(message, status, payload) {
+    super(message);
+    this.status = status;
+    this.payload = payload;
+  }
+}
+
+async function send(url, { path, method = 'GET', body = null, timeout = 4000, raw = false, token = '' } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
+  const headers = {};
+  if (body) headers['content-type'] = 'application/json';
+  if (token) headers['x-scanlet-token'] = token;
   try {
     const response = await fetch(new URL(path, url).toString(), {
       method,
       body,
       signal: controller.signal,
-      headers: body ? { 'content-type': 'application/json' } : undefined,
+      headers: Object.keys(headers).length ? headers : undefined,
     });
     if (!response.ok) {
-      const detail = await response.text().catch(() => '');
-      throw new Error(detail || `${response.status} ${response.statusText}`);
+      let payload = null;
+      try {
+        payload = await response.clone().json();
+      } catch {
+        payload = null;
+      }
+      const detail = payload?.error || (await response.text().catch(() => ''));
+      throw new RequestError(detail || `${response.status} ${response.statusText}`, response.status, payload);
     }
     return raw ? response : response.json();
-  } catch (err) {
-    if (err.name === 'AbortError') throw new Error('The bridge did not answer in time.');
-    throw new Error(
-      err.message === 'Failed to fetch'
-        ? 'No bridge is listening there. Start it, then press Connect.'
-        : err.message,
+  } catch (error) {
+    if (error instanceof RequestError) throw error;
+    if (error.name === 'AbortError') throw new RequestError('The bridge did not answer in time.', 0);
+    throw new RequestError(
+      error.message === 'Failed to fetch'
+        ? 'Nothing answered there. Check the address, or start the bridge.'
+        : error.message,
+      0,
     );
   } finally {
     clearTimeout(timer);
   }
 }
 
-/** Ask a bridge who it is and which printers it can see. */
-export async function probe(url) {
-  const health = await request(url, { path: '/health', timeout: 2500 });
-  return {
-    ok: health?.ok !== false,
-    version: health?.version || 'unknown',
-    printers: Array.isArray(health?.printers) ? health.printers : [],
-  };
+/* ─────────────────────────── the bridge ─────────────────────────── */
+
+export class BridgeClient {
+  constructor(url = DEFAULT_BRIDGE, token = '') {
+    this.url = normaliseBridgeUrl(url) || DEFAULT_BRIDGE;
+    this.token = token || '';
+  }
+
+  /** Who is there? Never throws on an auth problem — look at `requiresToken`. */
+  async probe() {
+    const health = await send(this.url, { path: '/health', timeout: 2500, token: this.token });
+    return {
+      url: this.url,
+      ok: health?.ok !== false,
+      version: health?.version || 'unknown',
+      lan: Boolean(health?.lan),
+      app: Boolean(health?.app),
+      requiresToken: Boolean(health?.requiresToken),
+      paired: health?.paired !== false,
+      addresses: Array.isArray(health?.addresses) ? health.addresses : [],
+      port: health?.port || 0,
+      printers: Array.isArray(health?.printers) ? health.printers : [],
+    };
+  }
+
+  async discover() {
+    const data = await send(this.url, { path: '/printers', timeout: 8000, token: this.token });
+    return Array.isArray(data?.printers) ? data.printers : [];
+  }
+
+  capabilities(id) {
+    return send(this.url, {
+      path: `/printers/${encodeURIComponent(id)}/capabilities`,
+      timeout: 12000,
+      token: this.token,
+    });
+  }
+
+  async probeAddress(address) {
+    return send(this.url, {
+      path: '/probe',
+      method: 'POST',
+      body: JSON.stringify({ address }),
+      timeout: 15000,
+      token: this.token,
+    });
+  }
+
+  /**
+   * Run a scan, reporting pages as they arrive.
+   * @returns {Promise<Array<{blob:Blob, mime:string}>>}
+   */
+  async scan(id, options = {}, { onPage } = {}) {
+    const response = await send(this.url, {
+      path: `/printers/${encodeURIComponent(id)}/scan`,
+      method: 'POST',
+      body: JSON.stringify(options),
+      timeout: 180_000,
+      raw: true,
+      token: this.token,
+    });
+    return parseScanResponse(response, onPage);
+  }
 }
 
-export async function discover(url) {
-  const data = await request(url, { path: '/printers', timeout: 6000 });
-  return Array.isArray(data?.printers) ? data.printers : [];
-}
-
-export async function capabilities(url, id) {
-  return request(url, { path: `/printers/${encodeURIComponent(id)}/capabilities`, timeout: 8000 });
-}
-
-/** Reach a device that Bonjour did not announce, by host or host:port. */
-export async function probeAddress(url, address) {
-  const data = await request(url, {
-    path: '/probe',
-    method: 'POST',
-    body: JSON.stringify({ address }),
-    timeout: 15000,
-  });
-  return data;
-}
-
-/**
- * Run a scan and return one or more page images.
- * @returns {Promise<Array<{blob:Blob, mime:string}>>}
- */
-export async function scan(url, id, options = {}) {
-  const response = await request(url, {
-    path: `/printers/${encodeURIComponent(id)}/scan`,
-    method: 'POST',
-    body: JSON.stringify(options),
-    timeout: 180_000,
-    raw: true,
-  });
-  return parseScanResponse(response);
-}
-
-async function parseScanResponse(response) {
+async function parseScanResponse(response, onPage) {
   const type = response.headers.get('content-type') || '';
-  if (type.startsWith('image/')) {
+
+  if (type.startsWith('image/') || type.startsWith('application/pdf')) {
     const blob = await response.blob();
-    return [{ blob, mime: type.split(';')[0] }];
+    const page = { blob, mime: type.split(';')[0] };
+    onPage?.(page, 1, 1);
+    return [page];
   }
-  if (type.startsWith('application/pdf')) {
-    const blob = await response.blob();
-    return [{ blob, mime: 'application/pdf' }];
-  }
+
   if (type.startsWith('multipart/')) {
     const boundaryMatch = /boundary="?([^";]+)"?/i.exec(type);
     const buffer = new Uint8Array(await response.arrayBuffer());
-    if (!boundaryMatch) throw new Error('The bridge sent a malformed multi-page response.');
-    return splitMultipart(buffer, boundaryMatch[1]);
+    if (!boundaryMatch) throw new RequestError('The bridge sent a malformed multi-page response.', 0);
+    const parts = splitMultipart(buffer, boundaryMatch[1]);
+    parts.forEach((page, index) => onPage?.(page, index + 1, parts.length));
+    return parts;
   }
-  throw new Error(`The bridge returned an unexpected content type: ${type || 'none'}`);
+
+  throw new RequestError(`The bridge returned an unexpected content type: ${type || 'none'}`, 0);
 }
 
 function splitMultipart(buffer, boundary) {
   const marker = new TextEncoder().encode(`--${boundary}`);
+  const crlfcrlf = new TextEncoder().encode('\r\n\r\n');
   const parts = [];
   let index = 0;
   while (index < buffer.length) {
     const start = indexOfBytes(buffer, marker, index);
     if (start === -1) break;
     const headerStart = start + marker.length;
-    const headerEnd = indexOfBytes(buffer, new TextEncoder().encode('\r\n\r\n'), headerStart);
+    const headerEnd = indexOfBytes(buffer, crlfcrlf, headerStart);
     if (headerEnd === -1) break;
     const headers = new TextDecoder().decode(buffer.subarray(headerStart, headerEnd));
     let next = indexOfBytes(buffer, marker, headerEnd + 4);
@@ -131,6 +200,187 @@ function indexOfBytes(haystack, needle, from = 0) {
   }
   return -1;
 }
+
+/**
+ * Look for bridges worth offering: this origin (when Scanlet is being served by
+ * one), then the standard loopback address, then whatever the user used last.
+ */
+export async function detectBridges({ remember = null, sameOrigin = true } = {}) {
+  const candidates = [];
+  const add = (url, token = '') => {
+    const clean = normaliseBridgeUrl(url);
+    if (!clean) return;
+    const existing = candidates.find((c) => c.url === clean);
+    // Keep whichever variant carries a pairing code.
+    if (existing) {
+      if (!existing.token && token) existing.token = token;
+      return;
+    }
+    candidates.push({ url: clean, token });
+  };
+
+  // A code we already hold for an address should be offered to that address,
+  // whichever way we happen to have reached it.
+  const rememberedToken = (url) => {
+    const clean = normaliseBridgeUrl(url);
+    return remember?.url && normaliseBridgeUrl(remember.url) === clean ? remember.token || '' : '';
+  };
+
+  if (sameOrigin && typeof location !== 'undefined' && /^https?:$/.test(location.protocol)) {
+    add(location.origin, rememberedToken(location.origin));
+  }
+  add(DEFAULT_BRIDGE, rememberedToken(DEFAULT_BRIDGE));
+  if (remember?.url) add(remember.url, remember.token);
+
+  const found = [];
+  for (const candidate of candidates) {
+    try {
+      const info = await new BridgeClient(candidate.url, candidate.token).probe();
+      if (info.ok) {
+        found.push({ ...info, token: candidate.token, sameOrigin: candidate.url === location?.origin });
+      }
+    } catch {
+      /* not a bridge; keep looking */
+    }
+  }
+  // A bridge we are already paired with beats one that still needs a code.
+  found.sort((a, b) => Number(b.paired) - Number(a.paired));
+  return found;
+}
+
+/* ─────────────────────────── the extension ─────────────────────────── */
+
+const EXT_SOURCE = 'scanlet-page';
+const EXT_REPLY = 'scanlet-extension';
+
+/** True when the optional browser extension is installed and listening. */
+export function extensionPing(timeout = 600) {
+  return new Promise((resolve) => {
+    if (typeof window === 'undefined') return resolve(null);
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('message', onMessage);
+      resolve(value);
+    };
+    const onMessage = (event) => {
+      if (event.source !== window) return;
+      const data = event.data;
+      if (data?.source === EXT_REPLY && data.type === 'pong') done(data);
+    };
+    window.addEventListener('message', onMessage);
+    window.postMessage({ source: EXT_SOURCE, type: 'ping' }, location.origin);
+    setTimeout(() => done(null), timeout);
+  });
+}
+
+/** A page-side client for the extension, over window.postMessage. */
+export class ExtensionClient {
+  constructor({ timeout = 240_000 } = {}) {
+    this.timeout = timeout;
+    this.serial = 0;
+    this.pending = new Map();
+    this.listeners = new Set();
+    this.onMessage = (event) => {
+      if (event.source !== window) return;
+      const data = event.data;
+      if (data?.source !== EXT_REPLY) return;
+      this.listeners.forEach((fn) => fn(data));
+      if (!data.id) return;
+      const entry = this.pending.get(data.id);
+      if (!entry) return;
+      if (data.type === 'error') {
+        this.pending.delete(data.id);
+        entry.reject(new Error(data.error || 'The extension failed.'));
+      } else if (data.type === 'done') {
+        this.pending.delete(data.id);
+        entry.resolve(entry.result);
+      } else if (entry.onEvent) {
+        entry.onEvent(data);
+        if (data.type === 'page') entry.result.push(data);
+      }
+    };
+    window.addEventListener('message', this.onMessage);
+  }
+
+  dispose() {
+    window.removeEventListener('message', this.onMessage);
+    this.pending.clear();
+    this.listeners.clear();
+  }
+
+  send(type, payload = {}, { onEvent } = {}) {
+    const id = `c${++this.serial}`;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject, onEvent, result: [] });
+      window.postMessage({ source: EXT_SOURCE, type, id, ...payload }, location.origin);
+      setTimeout(() => {
+        if (!this.pending.has(id)) return;
+        this.pending.delete(id);
+        reject(new Error('The extension did not answer in time.'));
+      }, this.timeout);
+    });
+  }
+
+  async probe() {
+    const pong = await extensionPing();
+    return pong ? { ok: true, version: pong.version, printers: [] } : null;
+  }
+
+  /** `discover` may stream printers in as it finds them. */
+  async discover({ onPrinter } = {}) {
+    const printers = [];
+    await this.send('discover', {}, {
+      onEvent: (data) => {
+        if (data.type === 'printer') {
+          printers.push(data.printer);
+          onPrinter?.(data.printer);
+        }
+      },
+    });
+    return printers;
+  }
+
+  capabilities(id) {
+    return this.send('capabilities', { id }).then((result) => result?.caps || result);
+  }
+
+  probeAddress(address) {
+    return this.send('probe-address', { address }).then((result) => result?.printer || result);
+  }
+
+  /** Scan and decode each page to a Blob as it arrives. */
+  async scan(id, options = {}, { onPage, onProgress } = {}) {
+    const pages = [];
+    await this.send('scan', { id, options }, {
+      onEvent: (data) => {
+        if (data.type !== 'page') return;
+        const bytes = base64ToBytes(data.data);
+        const page = { blob: new Blob([bytes], { type: data.mime || 'image/jpeg' }), mime: data.mime };
+        pages.push(page);
+        onProgress?.(data.index, data.total);
+        onPage?.(page, data.index, data.total);
+      },
+    });
+    return pages;
+  }
+}
+
+function base64ToBytes(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/* ─────────────────────────── compatibility helpers ─────────────────────────── */
+
+export const probe = (url, token = '') => new BridgeClient(url, token).probe();
+export const discover = (url, token = '') => new BridgeClient(url, token).discover();
+export const capabilities = (url, id, token = '') => new BridgeClient(url, token).capabilities(id);
+export const probeAddress = (url, address, token = '') => new BridgeClient(url, token).probeAddress(address);
+export const scan = (url, id, options = {}, extra) => new BridgeClient(url).scan(id, options, extra);
 
 /** Common eSCL colour modes, in the order most printers prefer them. */
 export const COLOR_MODES = [

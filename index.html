@@ -300,40 +300,101 @@
       </button>
     </header>
     <div class="sheet-body">
-      <div class="status-line">
-        <span class="dot" id="bridge-dot"></span>
-        <span id="bridge-status">Looking for a local scanning bridge…</span>
-      </div>
 
-      <p class="hint">
-        Browsers cannot open a socket to a printer, so Scanlet talks to a small bridge running on
-        your own machine. Without it, you can still import files or use the camera — and you can add
-        printers by address below.
-      </p>
-
-      <div class="field-row">
-        <div class="field grow">
-          <label for="bridge-url">Bridge address</label>
-          <input class="input" id="bridge-url" placeholder="http://127.0.0.1:8787" spellcheck="false" />
+      <div class="notice" id="served-by-bridge" hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>
+        <div>
+          <strong>This page is being served by the bridge.</strong>
+          <span>Scanning is already connected — nothing to set up.</span>
         </div>
-        <button class="btn" id="bridge-connect">Connect</button>
       </div>
 
-      <div class="field" id="btn-bridge-help-wrap">
-        <button class="btn ghost" id="btn-bridge-help">How do I run the bridge?</button>
+      <div class="seg" id="scan-method" role="radiogroup" aria-label="How to reach a printer">
+        <button role="radio" data-method="bridge" aria-checked="true">Scanning bridge</button>
+        <button role="radio" data-method="extension">Browser extension</button>
+        <button role="radio" data-method="address" aria-checked="false">By address</button>
       </div>
+
+      <!-- ── the bridge ── -->
+      <section class="method" id="method-bridge">
+        <div class="status-line">
+          <span class="dot" id="bridge-dot"></span>
+          <span id="bridge-status">Looking for a scanning bridge…</span>
+        </div>
+
+        <div class="field-row">
+          <div class="field grow">
+            <label for="bridge-url">Bridge address</label>
+            <input class="input" id="bridge-url" placeholder="http://127.0.0.1:8787" spellcheck="false" />
+          </div>
+          <button class="btn" id="bridge-connect">Connect</button>
+        </div>
+
+        <div class="field" id="bridge-pair-wrap" hidden>
+          <label for="bridge-token">Pairing code</label>
+          <div class="field-row">
+            <input class="input grow" id="bridge-token" placeholder="the #code from the bridge's address" spellcheck="false" />
+            <button class="btn" id="bridge-pair">Pair</button>
+            <button class="btn" id="bridge-read-qr" hidden title="Read the code from another screen">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4M8 12h8"/></svg>
+              Scan
+            </button>
+          </div>
+          <p class="hint" id="bridge-pair-hint">
+            On a phone: open the address the bridge printed, then “Add to Home Screen”.
+          </p>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn ghost sm" id="btn-bridge-help">How do I run the bridge?</button>
+          <button class="btn ghost sm" id="bridge-share-toggle" hidden>Use Scanlet on another device</button>
+        </div>
+
+        <div class="field" id="bridge-share" hidden>
+          <label>Scan this with your phone</label>
+          <div class="qr-row">
+            <img id="bridge-qr" alt="QR code linking to this bridge" width="180" height="180" />
+            <div class="qr-text">
+              <p class="hint" id="bridge-qr-hint"></p>
+              <div class="field-row">
+                <input class="input grow" id="bridge-qr-url" readonly spellcheck="false" />
+                <button class="btn sm" id="bridge-qr-copy">Copy</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ── the extension ── -->
+      <section class="method" id="method-extension" hidden>
+        <div class="status-line">
+          <span class="dot" id="ext-dot"></span>
+          <span id="ext-status">Looking for the Scanlet bridge extension…</span>
+        </div>
+        <p class="hint">
+          The extension reaches printers directly, so it needs no server. Install it from the
+          <code>extension/</code> folder of the repository (chrome://extensions → Load unpacked).
+        </p>
+        <div class="btn-row">
+          <button class="btn sm" id="ext-recheck">Check again</button>
+        </div>
+      </section>
+
+      <!-- ── by address ── -->
+      <section class="method" id="method-address" hidden>
+        <div class="field">
+          <label for="printer-addr">Device address (eSCL / AirScan)</label>
+          <div class="field-row">
+            <input class="input grow" id="printer-addr" placeholder="192.168.1.42:80" spellcheck="false" />
+            <button class="btn" id="printer-probe">Add</button>
+          </div>
+          <p class="hint">Works with or without the bridge: it is probed from wherever the request comes from.</p>
+        </div>
+      </section>
 
       <div class="field" id="printer-list-wrap" hidden>
-        <label>Discovered devices</label>
+        <label>Devices</label>
         <div class="printer-list" id="printer-list"></div>
-      </div>
-
-      <div class="field" id="manual-printer-wrap">
-        <label for="printer-addr">Or enter a device address (eSCL / AirScan)</label>
-        <div class="field-row">
-          <input class="input grow" id="printer-addr" placeholder="192.168.1.42:80" spellcheck="false" />
-          <button class="btn" id="printer-probe">Probe</button>
-        </div>
       </div>
 
       <div class="field" id="scan-options" hidden>
@@ -381,6 +442,26 @@
   </div>
 </div>
 
+<!-- ─────────────────────────  qr reader  ───────────────────────── -->
+<div class="modal" id="modal-qr" hidden>
+  <div class="sheet narrow">
+    <header class="sheet-head">
+      <strong>Scan the pairing code</strong>
+      <button class="icon-btn" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <div class="sheet-body">
+      <p class="hint">Point this device at the QR code shown by Scanlet on the other screen.</p>
+      <div class="qr-stage">
+        <video id="qr-video" playsinline muted></video>
+        <div class="qr-frame" aria-hidden="true"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+
 <!-- ─────────────────────────  bridge help  ───────────────────────── -->
 <div class="modal" id="modal-help" hidden>
   <div class="sheet">
@@ -391,17 +472,23 @@
       </button>
     </header>
     <div class="sheet-body">
-      <p>The bridge is a tiny Node script with no dependencies. It discovers scanners over Bonjour
+      <p>The bridge is one Node file with no dependencies. It discovers scanners over Bonjour
       (<code>_uscan._tcp</code>) and performs eSCL scans — the same driverless protocol macOS
       AirScan and SANE’s <code>escl</code> backend use.</p>
       <ol class="steps">
         <li>Download <code>bridge/scanlet-bridge.mjs</code> from this repository.</li>
-        <li><code>node scanlet-bridge.mjs</code></li>
+        <li><code>node scanlet-bridge.mjs</code> — for this machine only.</li>
+        <li><code>node scanlet-bridge.mjs --lan</code> — also serves Scanlet to your phone, with a
+        pairing link you can scan as a QR code.</li>
         <li>Leave it running and press <em>Connect</em> above.</li>
       </ol>
-      <pre class="code" id="help-cmd">node scanlet-bridge.mjs</pre>
-      <p class="hint">The bridge only listens on <code>127.0.0.1</code> and only ever talks to printers on
-      your local network. Scanlet itself still runs entirely in this tab.</p>
+      <pre class="code" id="help-cmd">node scanlet-bridge.mjs --lan</pre>
+      <p class="hint">Add <code>--tls</code> to serve over https. A phone needs https for the camera,
+      the service worker and “Add to Home Screen”, because browsers only treat https and localhost
+      as secure.</p>
+      <p class="hint">The bridge only ever talks to printers on your local network, and in
+      <code>--lan</code> mode every request needs the pairing code it prints. Prefer the browser
+      extension on a desktop: it needs no server at all.</p>
       <button class="btn" id="help-copy">Copy command</button>
     </div>
   </div>

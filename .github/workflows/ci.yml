@@ -22,9 +22,12 @@ jobs:
       - name: Bridge end-to-end tests (mock eSCL scanner)
         run: node bridge/test/bridge.test.mjs
 
+      - name: Extension printer-layer tests
+        run: node extension/test/escl.test.mjs
+
       - name: Every module parses
         run: |
-          for file in assets/js/*.js sw.js; do
+          for file in assets/js/*.js extension/src/*.js sw.js; do
             node --check "$file" || exit 1
           done
         shell: bash

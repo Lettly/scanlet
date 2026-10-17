@@ -85,7 +85,7 @@ export const state = {
   activeId: null,
   selection: new Set(),
   busy: false,
-  bridge: { url: 'http://127.0.0.1:8787', online: false, printers: [] },
+  bridge: { url: '', token: '' },
 };
 
 const listeners = new Set();

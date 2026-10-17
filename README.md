@@ -1,11 +1,11 @@
 # Scanlet
 
 **A private document scanner and PDF toolkit that runs entirely in your browser.**
-No account, no upload, no server. Scanlet is a static site — drop it on GitHub
-Pages and it works.
+No account, no upload, no server holding your documents. Scanlet is a static site —
+host it on GitHub Pages and it works everywhere, including on a phone.
 
 > Scan it on your phone, tidy it on your laptop, export a searchable PDF. The
-> files never leave the device.
+> documents never leave your devices.
 
 ---
 
@@ -17,26 +17,26 @@ Pages and it works.
   correction (draggable corner handles), multi-shot capture and an auto-shoot guide.
 - **Import** — images (JPEG, PNG, WebP, GIF, BMP, HEIC where the browser can decode
   it) and PDFs, the latter rendered page by page with PDF.js. Drag and drop anywhere.
-- **Network scanners** — real flatbed, ADF and duplex scanning over eSCL/AirScan via
-  an optional local bridge (see below). Blank sheets pulled by an ADF are detected
-  and dropped automatically.
+- **Network scanners** — flatbed, ADF and duplex pull scanning over eSCL/AirScan,
+  either through the **browser extension** (no server) or the **bridge** (works on
+  every browser, and can serve Scanlet to your phone). Blank sheets pulled by an ADF
+  are detected and dropped automatically.
 
 **Clean up**
 
 - **Enhance** — auto-levels, contrast and saturation in one pass.
-- **Grayscale** and **adaptive black & white** — a local-mean threshold that
-  survives uneven lighting far better than a global one.
+- **Grayscale** and **adaptive black & white** — a local-mean threshold that survives
+  uneven lighting far better than a global one.
 - **Magic** — divides out the local background, flattening shadows and grey casts.
 - **Deskew** — estimates skew by maximising the horizontal projection profile.
 - **Auto-crop** — trims the uniform paper border.
-- Rotate by 90° or by any angle, flip, reorder by drag and drop, duplicate, split a
-  document in two, extract pages to a new document. Everything is non-destructive:
-  originals are kept, and every step can be reverted or baked in later.
+- Rotate by 90° or any angle, flip, reorder by drag and drop, duplicate, split a
+  document in two, extract pages to a new one. Nothing is destructive: originals are
+  kept, and every step can be reverted or baked in later.
 
 **Recognise**
 
-- OCR with Tesseract.js in 17 language configurations, run page by page in the
-  browser.
+- OCR with Tesseract.js in 17 language configurations, run page by page in the browser.
 - The recognised text is embedded as an invisible layer in the exported PDF, so the
   result is searchable and copy-pasteable in any reader — plus plain-text export.
 
@@ -44,69 +44,108 @@ Pages and it works.
 
 - Page sizes A3–A5 / Letter / Legal, or fit-to-content; portrait, landscape or
   automatic per page; configurable margins.
-- 1-up, 2-up, 4-up and 2-up landscape book layouts; booklet helper (insert blanks
-  for back-to-back printing).
-- JPEG or PNG encoding with a quality slider, optional downsampling to a target DPI.
-- Searchable text layer, page numbers, diagonal watermark, per-page bookmarks
-  (a proper PDF outline), full document metadata (title, author, subject, keywords).
-- Three one-click presets: *scanned doc*, *archive*, *smallest*.
-- Live size estimate before you build.
+- 1-up, 2-up, 4-up and 2-up landscape book layouts; booklet helper for back-to-back
+  printing.
+- JPEG or PNG encoding with a quality slider, and optional downsampling to a target DPI.
+- Searchable text layer, page numbers, diagonal watermark, per-page bookmarks (a real
+  PDF outline) and full document metadata.
+- Three one-click presets and a live size estimate before you build.
 
 **Keep**
 
-- Multiple documents in IndexedDB, autosaved.
-- Export a project bundle (`.scanlet.zip`, originals + edit recipes) and reopen it
-  later or on another machine.
-- Export pages as PNGs in a zip.
-- Installable PWA with an offline app shell, plus a light/dark theme.
+- Multiple documents in IndexedDB, autosaved, with an installable PWA and offline shell.
+- Export a project bundle (`.scanlet.zip`) and reopen it later or on another machine.
+- Export pages as PNGs in a zip, or print straight from the browser.
 
 ---
 
-## The honest bit about scanning
+## How scanning reaches a printer
 
-A web page cannot open a socket to a printer, and browsers cannot speak mDNS.
-That is a platform limit, not a Scanlet one. So there are three ways to get a real
-scan in:
+A web page cannot open a socket to a printer, cannot ask about printers over mDNS, and
+— because printers send no CORS headers — cannot even read the reply to an HTTP
+request. That is a platform limit, not a Scanlet one, and it is the whole reason the
+choices below exist.
 
 | Path | Needs | Works for |
 |---|---|---|
-| **Camera** | nothing | Anything with a lens — phone, laptop |
-| **Import** | the file already exists | Scans pushed to SMB/FTP/email/cloud |
-| **Bridge** | one `node` command on your own machine | Flatbed / ADF / duplex pull scanning |
+| **Camera** | nothing | anything with a lens, phone or laptop |
+| **Import** | the file already exists | scans pushed to SMB / FTP / email / cloud |
+| **Extension** | one click in Chrome/Edge | this computer, any eSCL printer, no server |
+| **Bridge** | one `node` command | any browser, and **other devices on your network** |
 
-Without the bridge, Scanlet is still a complete scanner-on-your-phone and PDF
-workbench. With it, "Scan from a printer" pulls pages straight from any device that
-speaks **eSCL** — the driverless protocol behind Apple AirScan, also implemented by
-SANE's `escl` backend. No vendor drivers, no SDKs.
+### The plugin (no server)
 
----
+`extension/` is a Chrome/Edge extension. An extension *can* read a printer's reply
+when you grant it host access, so the plugin replaces the local server entirely:
 
-## Running the bridge (optional, for network scanning)
+1. `chrome://extensions` → Developer mode → **Load unpacked** → `extension/`.
+2. Options → **Grant network access**.
+3. In Scanlet: **Scanner → Browser extension**.
 
-```sh
-node bridge/scanlet-bridge.mjs          # listens on 127.0.0.1:8787
-```
+Discovery is a sweep of the `/24` prefixes you list, because an extension has no mDNS
+socket. See [`extension/README.md`](extension/README.md) for the permission model.
 
-Zero dependencies, Node 18+. It discovers scanners over Bonjour
-(`_uscan._tcp`, `_uscans._tcp`, `_scanner._tcp`) and exposes a small CORS-enabled
-HTTP API on the loopback interface. In Scanlet, open **Scanner → Connect**; your
-printers appear in a list. If Bonjour is blocked on your network, type an address
-such as `192.168.1.42` and press **Probe**.
+### The bridge
 
 ```sh
-node bridge/scanlet-bridge.mjs --port 9090   # different port
-node bridge/scanlet-bridge.mjs --quiet       # no logging
+node bridge/scanlet-bridge.mjs            # this machine only (127.0.0.1:8787)
+node bridge/scanlet-bridge.mjs --lan      # also serves Scanlet to your phone
+node bridge/scanlet-bridge.mjs --lan --tls  # …over https, for the full PWA
 ```
 
-The bridge binds to `127.0.0.1` only, talks only to printers on your local network,
-and stores nothing. The application itself still runs entirely in the tab.
+One file, no dependencies, Node 18+. It discovers scanners over Bonjour
+(`_uscan._tcp`, `_uscans._tcp`, `_scanner._tcp`) and drives them with **eSCL** — the
+driverless protocol Apple AirScan and SANE's `escl` backend use. No vendor drivers, no
+SDKs.
+
+In the default mode it is a private helper on the loopback interface. With `--lan` it
+becomes a small scan server that **also serves the Scanlet app**, so any device on
+your network can open it and scan. Access is gated by a pairing code, which the bridge
+prints inside the link:
+
+```
+Open Scanlet on this machine:  http://127.0.0.1:8787/#s=TKrnnFUsQM-u
+Open Scanlet on your phone:    http://192.168.1.50:8787/#s=TKrnnFUsQM-u
+```
+
+Scanlet reads that `#s=` code on load, pairs itself, strips it from the address bar and
+shows a QR code so the next device can join with one scan.
+
+| Flag | Meaning |
+|---|---|
+| `--lan` | listen on the network and serve the app, with a pairing code |
+| `--tls` | serve over https with a generated self-signed certificate |
+| `--token <code>` | use a fixed pairing code instead of a random one |
+| `--port`, `--host`, `--quiet` | as you would expect |
+| `--app <dir>`, `--no-serve` | where the app lives, or do not serve it at all |
+
+### Mobile, honestly
+
+**A browser on a phone still cannot reach a printer on its own** — no sockets, no
+mDNS, and the same CORS wall. No PWA can change that, and iOS offers no extension
+mechanism that could.
+
+What *does* work is the bridge serving the app:
+
+| How | What you get |
+|---|---|
+| `--lan`, plain http | full scanning on the phone. No camera, no offline cache, no install — browsers only treat **https** and localhost as secure |
+| `--lan --tls` | everything: scanning, camera capture, service worker, **Add to Home Screen** |
+| Camera in the PWA | works today with no bridge at all |
+
+With `--tls` your browser warns about the self-signed certificate once. Accept it, and
+the address you are on becomes a proper secure origin. The app is installable at that
+address and behaves like an app.
+
+Storage is per-origin, so documents kept at the bridge's address are separate from
+documents kept at the GitHub Pages address. Pick one and stay there.
 
 ### Trying it without a printer
 
 ```sh
-node bridge/test/mock-scanner.mjs --render      # a fake eSCL scanner on :8199
-node bridge/scanlet-bridge.mjs                  # then add 127.0.0.1:8199 in the UI
-node bridge/test/bridge.test.mjs                # or run the end-to-end test
+node bridge/test/mock-scanner.mjs --render   # a fake eSCL scanner on :8199
+node bridge/scanlet-bridge.mjs               # then add 127.0.0.1:8199 in the UI
+npm test                                     # both test suites
 ```
 
 ---
@@ -120,31 +159,32 @@ python3 -m http.server 8899
 # then open http://127.0.0.1:8899
 ```
 
-Open `index.html` directly and most of it works, but the camera and the bridge both
-need a real origin, so serve it over HTTP.
+Opening `index.html` directly works for import and export, but the camera and the
+bridge both need a real origin, so serve it over HTTP.
 
 ## Deploy it
 
 Any static host will do. For GitHub Pages: push this repository, then in
 **Settings → Pages** choose **Deploy from a branch → main → / (root)** — that is
 exactly how the [live demo](https://lettly.github.io/scanlet/) is published. The
-included `.github/workflows/ci.yml` runs the test suite on every push; it does not
-need to touch Pages.
-
-Everything is relative-pathed, so it works at `https://user.github.io/scanlet/`
-without configuration. No `.nojekyll` processing issues — the repo ships one anyway.
+included `.github/workflows/ci.yml` runs the tests on every push; it does not need to
+touch Pages.
 
 ## Test it
 
 ```sh
-npm test        # bridge + client: discovery, capabilities, multipart scan pages
+npm test    # bridge end-to-end + the extension's printer layer
 ```
+
+- `bridge/test/bridge.test.mjs` drives a private bridge **and** a paired LAN bridge
+  against a mock eSCL scanner, with the real client module — so multipart parsing,
+  token auth, static serving and path-traversal refusal are all covered.
+- `extension/test/escl.test.mjs` drives the extension's `fetch`-only modules against
+  the same mock, covering capability parsing, scan-region arithmetic and ADF streaming.
 
 There is also an in-app smoke test: **⋮ → About Scanlet → Run diagnostics** checks
 perspective warp, edge detection, adaptive B&W, deskew, border trim, rotation, PDF
-export (including outline, text layer, watermark and N-up) and IndexedDB.
-
----
+export (outline, text layer, watermark, N-up) and IndexedDB.
 
 ## Keyboard shortcuts
 
@@ -177,53 +217,63 @@ assets/js/
   capture.js            getUserMedia capture + live edge suggestion
   pdfs.js               PDF.js import, pdf-lib export
   ocr.js                Tesseract.js worker pool
-  bridge.js             client for the optional local bridge
+  bridge.js             clients for the bridge and the browser extension
+  qr.js                 QR codes, for handing a session to another device
 sw.js                   offline app shell + runtime caching for CDN libraries
-bridge/                 the local scanning bridge (Node, no dependencies)
-icons/                  generated PNG icons (tools/make_icons.py)
+bridge/                 the scanning bridge (Node, no dependencies)
+bridge/test/            mock eSCL scanner + its end-to-end tests
+extension/              the Chrome/Edge plugin (MV3)
+extension/test/         tests for its printer layer
+icons/, tools/          generated PNG icons and the generator
 ```
 
-A page is two things: the **untouched original blob** in IndexedDB, and a small
-**edit recipe** (corners, rotation, filter, adjustments, OCR result) in the document
-record. Rendering applies the recipe on the fly; "bake edits" rewrites the original.
-That is what makes every operation reversible and the storage cheap.
+A page is two things: the **untouched original blob** in IndexedDB, and a small **edit
+recipe** (corners, rotation, filter, adjustments, OCR result) in the document record.
+Rendering applies the recipe on the fly; *bake edits* rewrites the original. That is
+what makes every operation reversible and the storage cheap.
 
 Rendering a page runs:
 
 ```
-original → perspective warp → rotation/flip → downscale → enhancement → border trim
+original → perspective warp → rotate/flip → downscale → enhancement → border trim
 ```
 
-Third-party libraries are loaded from jsDelivr and cached by the service worker on
-first use, so the repository stays small but the app still works offline after the
-first visit:
-
-| Library | Used for |
-|---|---|
-| [PDF.js](https://mozilla.github.io/pdf.js/) 3.11.174 | rendering imported PDFs |
-| [pdf-lib](https://pdf-lib.js.org/) 1.17.1 | writing the exported PDF |
-| [Tesseract.js](https://tesseract.projectnaptha.com/) 5.1.1 | OCR |
-| [JSZip](https://stuk.github.io/jszip/) 3.10.1 | page and project bundles |
+Third-party libraries load from jsDelivr and are cached by the service worker on first
+use, so the repository stays small but the app still works offline after the first
+visit: [PDF.js](https://mozilla.github.io/pdf.js/) 3.11.174, 
+[pdf-lib](https://pdf-lib.js.org/) 1.17.1,
+[Tesseract.js](https://tesseract.projectnaptha.com/) 5.1.1,
+[JSZip](https://stuk.github.io/jszip/) 3.10.1, and
+[qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) 1.4.4.
 
 ## Privacy
 
-There is no backend, no analytics, no telemetry, and no third-party requests other
-than the CDN fetches for the libraries above. Documents, page images and recognised
-text live in your browser's IndexedDB until you delete them. The optional bridge is
-the only component that touches the network, it runs on your machine, and it talks
-only to printers you point it at.
+There is no backend, no analytics, no telemetry, and no third-party request other than
+the CDN fetches for the libraries above. Documents, page images and recognised text
+live in your browser's storage until you delete them.
+
+The bridge and the extension are the only components that touch the network, and both
+talk only to printers you point them at. The bridge keeps its pairing code in the URL
+**fragment**, which is never sent to a server, logged, or leaked as a referrer.
 
 ## Limits worth knowing
 
-- **Duplex and ADF come from the device**, through eSCL. Devices that only support
-  vendor protocols are out of reach without a driver-based helper.
+- **A phone browser cannot scan a printer by itself.** Use the bridge's `--lan` mode,
+  or the camera. This is a platform limit that no web app can work around.
+- **Plain-http `--lan` is not a secure origin**, so on a phone you lose the camera, the
+  offline cache and PWA installation. Add `--tls` for those.
+- **Anyone with the pairing link can use your printers.** Treat it like a password;
+  it is printed rather than emailed for that reason. Do not expose the bridge to the
+  internet.
+- **The extension is Chrome/Edge only**, and finds printers by sweeping the prefixes
+  you give it rather than by mDNS.
+- **Duplex and ADF come from the device**, through eSCL. Devices that support only
+  vendor protocols need a driver-based helper.
 - **The OCR text layer uses the standard PDF fonts** (WinAnsi), so searchable text is
-  written for Latin-script languages. Recognised text in other scripts is still
-  exported to `.txt`, but is not embedded invisibly in the PDF.
-- **Very large batches** are bounded by browser memory; pages are processed a few at
-  a time and originals are kept in IndexedDB, not in memory.
-- **No PDF encryption** yet. If you need password-protected output, run the result
-  through `qpdf`/`pdftk` afterwards.
+  written for Latin-script languages. Other scripts are still exported to `.txt` but
+  not embedded invisibly.
+- **No PDF encryption** yet. Run the result through `qpdf` or `pdftk` if you need a
+  password.
 - **HEIC** import depends on the browser being able to decode it (Safari can, most
   others cannot).
 

@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Scanlet bridge",
+  "version": "1.0.0",
+  "description": "Reach eSCL / AirScan printers directly from Scanlet. No server, no drivers — just the extension.",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": {
+    "service_worker": "src/worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://lettly.github.io/scanlet/*",
+        "https://*/scanlet/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": ["src/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Scanlet bridge"
+  },
+  "options_page": "options.html",
+  "icons": {
+    "128": "icon-128.png"
+  }
+}
