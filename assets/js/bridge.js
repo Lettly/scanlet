@@ -167,7 +167,8 @@ async function parseScanResponse(response, onPage) {
   throw new RequestError(`The bridge returned an unexpected content type: ${type || 'none'}`, 0);
 }
 
-function splitMultipart(buffer, boundary) {
+/** Split a `multipart/mixed` body the way the bridge writes it. Exported for tests. */
+export function splitMultipart(buffer, boundary) {
   const marker = new TextEncoder().encode(`--${boundary}`);
   const crlfcrlf = new TextEncoder().encode('\r\n\r\n');
   const parts = [];

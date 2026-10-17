@@ -148,10 +148,16 @@ function renderPages(doc) {
 
   const existing = new Map($$('.page-card', ui.pages).map((node) => [node.dataset.pageId, node]));
   const keep = new Set();
+  // Walk the existing cards with a cursor so a card that is already in the right
+  // place is left alone: re-appending every card on every render moved the whole
+  // grid (losing focus, drag state and scroll) for no reason.
+  let cursor = ui.pages.firstElementChild;
   doc.pages.forEach((page, index) => {
     let card = existing.get(page.id);
     if (!card) card = buildPageCard(page);
     keep.add(page.id);
+    if (card !== cursor) ui.pages.insertBefore(card, cursor);
+    else cursor = cursor.nextElementSibling;
     card.__page = page;
     card.dataset.index = String(index);
     card.querySelector('.card-num').textContent = String(index + 1);
@@ -165,7 +171,6 @@ function renderPages(doc) {
     if (page.source === 'camera') tags.append(el('span', { class: 'tag src' }, 'CAM'));
     if (page.source === 'scanner') tags.append(el('span', { class: 'tag src' }, 'SCAN'));
     if (page.blank) tags.append(el('span', { class: 'tag', title: 'Looks blank' }, 'BLANK'));
-    ui.pages.append(card);
   });
   for (const [id, node] of existing) if (!keep.has(id)) node.remove();
 }
@@ -815,6 +820,50 @@ async function bakeSelection() {
   toast('Edits baked into the originals');
 }
 
+/**
+ * Flag and (optionally) delete pages that carry almost no ink — the sheets an
+ * ADF pulls because of a mis-feed. Scanner imports already drop these, but a
+ * folder of photos or a bad PDF can still contain them.
+ */
+async function removeBlankPages() {
+  const doc = store.activeDoc();
+  if (!doc?.pages.length) {
+    toast('Add some pages first.');
+    return;
+  }
+  const blanks = [];
+  await withProgress('Looking for blank pages', async ({ update, shouldCancel }) => {
+    for (const [index, page] of doc.pages.entries()) {
+      if (shouldCancel()) break;
+      update(index / doc.pages.length, `Page ${index + 1} of ${doc.pages.length}`);
+      let blank = false;
+      try {
+        const source = await store.pageSource(page);
+        const canvas = imaging.renderPage(source, page, { maxEdge: 900 });
+        blank = imaging.inkRatio(canvas) < 0.0025;
+      } catch {
+        blank = false;
+      }
+      page.blank = blank;
+      if (blank) blanks.push(page);
+    }
+  });
+  store.emit({ reason: 'pages' });
+
+  if (!blanks.length) {
+    toast('No blank-looking pages found.');
+    return;
+  }
+  const noun = blanks.length === 1 ? 'page' : 'pages';
+  if (!confirmDialog(`Found ${blanks.length} blank-looking ${noun}. Delete ${blanks.length === 1 ? 'it' : 'them'}?`)) {
+    toast(`Marked ${blanks.length} ${noun} as blank`);
+    return;
+  }
+  pushUndo();
+  await store.removePages(blanks.map((p) => p.id));
+  toast(`Removed ${blanks.length} blank ${noun}`);
+}
+
 /* ─────────────────────────────── page menu ─────────────────────────────── */
 
 let pageMenu = null;
@@ -1008,10 +1057,12 @@ async function openEditor(page) {
 
   const source = await store.pageSource(page);
   editorState.working = source;
+  // Always offer the four handles: with no existing crop they start on the full
+  // frame, so a page that auto-detection misses can still be cropped by hand.
   editorState.corners = page.crop?.applied && Array.isArray(page.crop.quad)
     ? page.crop.quad.map((p) => ({ ...p }))
     : imaging.fullFrameQuad(source);
-  if (!page.crop?.applied) editorState.corners = null;
+  $('#ed-flip').setAttribute('aria-pressed', String(editorState.flipH));
   drawEditor();
 }
 
@@ -1019,15 +1070,26 @@ function drawEditor() {
   const source = editorState.working;
   if (!source) return;
   const canvas = ui.editor.canvas;
-  const maxEdge = 1100;
-  const scale = Math.min(1, maxEdge / Math.max(source.width, source.height));
-  canvas.width = Math.round(source.width * scale);
-  canvas.height = Math.round(source.height * scale);
+  const fitted = imaging.fitCanvas(source, 1100);
+  canvas.width = fitted.width;
+  canvas.height = fitted.height;
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
 
-  // faint enhancement preview
+  // Show the chosen enhancement (and the page's own adjustments) live, so the
+  // filter choice is not a blind one. The corner handles stay in source-pixel
+  // space, which the filter pass does not disturb.
+  let preview = fitted;
+  const adjustments = editorState.page?.adjustments || {};
+  if (editorState.filter && editorState.filter !== 'original') {
+    try {
+      preview = imaging.enhance(fitted, { filter: editorState.filter, ...adjustments });
+    } catch {
+      preview = fitted;
+    }
+  }
+  ctx.drawImage(preview, 0, 0);
+
   const stageScale = canvas.width / source.width;
   drawCornerHandles(stageScale);
 }
@@ -1103,9 +1165,12 @@ function startHandleDrag(event, index) {
   const up = () => {
     handle.removeEventListener('pointermove', move);
     handle.removeEventListener('pointerup', up);
+    handle.removeEventListener('pointercancel', up);
+    if (handle.hasPointerCapture?.(event.pointerId)) handle.releasePointerCapture(event.pointerId);
   };
   handle.addEventListener('pointermove', move);
   handle.addEventListener('pointerup', up);
+  handle.addEventListener('pointercancel', up);
 }
 
 function editorAutoCrop() {
@@ -1803,13 +1868,33 @@ function updateEstimate() {
   if (!doc?.pages.length) return;
   const options = readExportOptions();
   const quality = clamp(Number(options.quality) / 100, 0.2, 1);
+
+  // Pixels actually written: the export downsamples each page to `maxDpi` at
+  // the target sheet size, so a 300 dpi cap on A4 is far smaller than the raw
+  // capture — the estimate should follow the same cap or it overstates wildly.
+  const maxDpi = Number(options.maxDpi) || 0;
+  const sheetLongIn =
+    options.pageSize === 'fit'
+      ? pdfs.SHEET_SIZES.A4[1] / 72
+      : Math.max(...(pdfs.SHEET_SIZES[options.pageSize] || pdfs.SHEET_SIZES.A4)) / 72;
+  const capEdge = maxDpi ? Math.round(maxDpi * sheetLongIn) : 0;
+
   let pixels = 0;
-  for (const page of doc.pages) pixels += page.width * page.height;
+  for (const page of doc.pages) {
+    if (!capEdge) {
+      pixels += page.width * page.height;
+      continue;
+    }
+    const longest = Math.max(page.width, page.height);
+    const scale = longest > capEdge ? capEdge / longest : 1;
+    pixels += page.width * page.height * scale * scale;
+  }
   const perPixel = options.imageFormat === 'image/png' ? 1.1 : 0.42 * quality ** 2.4;
   const bytes = pixels * perPixel * 0.25;
   const searchable = doc.pages.filter((p) => p.ocr).length;
   ui.exp.estimate.textContent =
     `≈ ${formatBytes(bytes)} across ${doc.pages.length} page${doc.pages.length === 1 ? '' : 's'}` +
+    (capEdge ? ` · at most ${maxDpi} dpi` : '') +
     (options.searchable
       ? searchable
         ? ` · text layer on ${searchable} page${searchable === 1 ? '' : 's'}`
@@ -1853,7 +1938,7 @@ async function exportPdf() {
     if (!bytes) return;
 
     const blob = new Blob([bytes], { type: 'application/pdf' });
-    const name = options.title ? `${safeFilename(options.title)}.pdf` : ui.exp.filename.value;
+    const name = `${safeFilename(options.title || stripExt(ui.exp.filename.value), 'scan')}.pdf`;
     download(blob, name);
     closeModal(ui.exp.modal);
     toast(`PDF ready — ${formatBytes(blob.size)}`);
@@ -2047,6 +2132,7 @@ function bindAppBar() {
         store.setSelection(doc.pages.map((p) => p.id));
         await bakeSelection();
       },
+      'remove-blank': removeBlankPages,
       settings: openExport,
       about: openAbout,
     };
@@ -2069,6 +2155,10 @@ function bindAppBar() {
 }
 
 function bindInspector() {
+  $('#btn-select-all').addEventListener('click', () => {
+    const doc = store.activeDoc();
+    if (doc?.pages.length) store.setSelection(doc.pages.map((p) => p.id));
+  });
   $('#btn-clear-sel').addEventListener('click', () => store.setSelection([]));
   ui.filterSeg.addEventListener('click', (event) => {
     const filter = event.target.closest('button')?.dataset.filter;
@@ -2136,11 +2226,13 @@ function bindModals() {
     if (!filter) return;
     editorState.filter = filter;
     setSeg(ui.edFilterSeg, filter);
+    drawEditor();
   });
   $('#ed-rot-l').addEventListener('click', () => changeEditorRotation(-90));
   $('#ed-rot-r').addEventListener('click', () => changeEditorRotation(90));
   $('#ed-flip').addEventListener('click', () => {
     editorState.flipH = !editorState.flipH;
+    $('#ed-flip').setAttribute('aria-pressed', String(editorState.flipH));
   });
   $('#ed-deskew').addEventListener('click', async () => {
     const angle = imaging.estimateSkew(editorState.working);
@@ -2158,7 +2250,7 @@ function bindModals() {
   });
   $('#ed-auto-crop').addEventListener('click', editorAutoCrop);
   $('#ed-reset').addEventListener('click', () => {
-    editorState.corners = null;
+    editorState.corners = imaging.fullFrameQuad(editorState.working);
     drawCornerHandles(ui.editor.canvas.width / editorState.working.width);
   });
   $('#ed-apply').addEventListener('click', () => applyEditor({ copy: false }));

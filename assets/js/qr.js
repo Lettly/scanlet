@@ -1,9 +1,9 @@
 /* Scanlet — QR codes, for handing a session from one device to another.
  *
- * Rendering uses `qrcode-generator` from a CDN, loaded on demand like the other
- * libraries. Reading a code uses the built-in BarcodeDetector where the browser
- * has one (Chrome on Android, for instance); elsewhere we say so and let the
- * user paste the link instead.
+ * Rendering uses `qrcode-generator` from `vendor/`, loaded on demand like the
+ * other libraries. Reading a code uses the built-in BarcodeDetector where the
+ * browser has one (Chrome on Android, for instance); elsewhere we say so and let
+ * the user paste the link instead.
  */
 
 const QR_LIB = new URL('../../vendor/qrcode-generator/qrcode.min.js', import.meta.url).toString();
@@ -45,16 +45,22 @@ export const qrReadingSupported = () =>
 /**
  * Point the camera at a QR code and return its contents.
  * Resolves with the decoded text, or rejects if nothing is found in time.
+ *
+ * `video`, when given, is the on-screen `<video>` the caller wants the preview
+ * in (the modal's own element). Without it the code would run behind a hidden
+ * element and the user would stare at a black box.
  */
-export async function readQr({ timeout = 30_000, onFrame } = {}) {
+export async function readQr({ video: previewVideo = null, timeout = 30_000, onFrame } = {}) {
   if (!qrReadingSupported()) throw new Error('This browser cannot read QR codes from the camera.');
   const detector = new window.BarcodeDetector({ formats: ['qr_code'] });
   const stream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } },
   });
-  const video = document.createElement('video');
-  video.playsInline = true;
-  video.muted = true;
+  const video = previewVideo || document.createElement('video');
+  if (!previewVideo) {
+    video.playsInline = true;
+    video.muted = true;
+  }
   video.srcObject = stream;
   await video.play().catch(() => {});
 
@@ -71,5 +77,6 @@ export async function readQr({ timeout = 30_000, onFrame } = {}) {
     throw new Error('No QR code found. Hold the code steady in the frame and try again.');
   } finally {
     for (const track of stream.getTracks()) track.stop();
+    video.srcObject = null;
   }
 }

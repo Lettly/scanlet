@@ -45,8 +45,14 @@ export function formatBytes(n) {
 export const stripExt = (name) => String(name || '').replace(/\.[a-z0-9]{1,6}$/i, '');
 
 export function safeFilename(name, fallback = 'document') {
-  const base = stripExt(name).replace(/[^\w\d \-_.()]+/g, '_').replace(/\s+/g, ' ').trim();
-  return base || fallback;
+  const base = stripExt(name)
+    .replace(/[^\w\d \-_.()]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/\s+/g, ' ')
+    .trim();
+  // A name made only of separators (e.g. "///") must fall back, not become "___".
+  const cleaned = base.replace(/^[_\-. ]+|[_\-. ]+$/g, '');
+  return cleaned || fallback;
 }
 
 export function download(blob, filename) {

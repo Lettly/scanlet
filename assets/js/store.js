@@ -145,6 +145,9 @@ export async function loadAll() {
     await saveDoc(doc);
   }
   emit({ reason: 'loaded' });
+  // The undo history is empty right after a load, so any original no document
+  // references is genuinely abandoned — sweep it without blocking the UI.
+  collectGarbage().catch(() => {});
   return state.docs;
 }
 
@@ -215,17 +218,37 @@ export async function addPage(page, { at = null, silent = false } = {}) {
   return page;
 }
 
+/*
+ * Removing a page does not delete its original here on purpose. The undo stack
+ * keeps whole page recipes, and a page whose blob was deleted comes back as a
+ * broken card ("the original for this page is missing"). Instead the blob is
+ * left behind and `collectGarbage()` sweeps anything no document references —
+ * on the next load, when the in-memory undo history is empty and a rebuild can
+ * no longer be wanted.
+ */
 export async function removePages(ids) {
   const doc = activeDoc();
   if (!doc) return;
   const set = new Set(ids);
-  for (const page of doc.pages) {
-    if (set.has(page.id)) await deleteBlob(page.blobId).catch(() => {});
-  }
   doc.pages = doc.pages.filter((p) => !set.has(p.id));
   for (const id of ids) state.selection.delete(id);
   await saveDoc(doc);
   emit({ reason: 'pages' });
+}
+
+/** Delete original blobs that no document still references. */
+export async function collectGarbage() {
+  let keys;
+  try {
+    keys = await tx(STORE_BLOBS, 'readonly', (s) => s.getAllKeys());
+  } catch {
+    return 0;
+  }
+  const referenced = new Set();
+  for (const doc of state.docs) for (const page of doc.pages) referenced.add(page.blobId);
+  const orphans = (keys || []).filter((key) => !referenced.has(key));
+  for (const key of orphans) await deleteBlob(key).catch(() => {});
+  return orphans.length;
 }
 
 /* ─────────────────── decoded originals (cached) ─────────────────── */

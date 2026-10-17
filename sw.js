@@ -19,7 +19,7 @@
  *     implement share targets, so on iOS this never fires.
  */
 
-const VERSION = 'scanlet-v5';
+const VERSION = 'scanlet-v6';
 const SHELL = [
   './',
   './index.html',

@@ -71,6 +71,7 @@
     <button role="menuitem" data-menu="ocr-all">Run OCR on all pages</button>
     <button role="menuitem" data-menu="straighten-all">Auto-deskew all pages</button>
     <button role="menuitem" data-menu="flatten-all">Apply &amp; bake edits on all pages</button>
+    <button role="menuitem" data-menu="remove-blank">Remove blank pages…</button>
     <hr />
     <button role="menuitem" data-menu="settings">Export defaults…</button>
     <button role="menuitem" data-menu="about">About Scanlet</button>
@@ -116,6 +117,9 @@
   <aside class="inspector" id="inspector" hidden>
     <div class="insp-head">
       <strong id="sel-count">No pages selected</strong>
+      <button class="icon-btn" id="btn-select-all" title="Select all pages" aria-label="Select all pages">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></svg>
+      </button>
       <button class="icon-btn" id="btn-clear-sel" title="Clear selection" aria-label="Clear selection">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>

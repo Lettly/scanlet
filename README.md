@@ -30,6 +30,7 @@ host it on GitHub Pages and it works everywhere, including on a phone.
 - **Magic** — divides out the local background, flattening shadows and grey casts.
 - **Deskew** — estimates skew by maximising the horizontal projection profile.
 - **Auto-crop** — trims the uniform paper border.
+- **Blank pages** — flag and remove sheets that carry almost no ink (⋮ → *Remove blank pages…*).
 - Rotate by 90° or any angle, flip, reorder by drag and drop, duplicate, split a
   document in two, extract pages to a new one. Nothing is destructive: originals are
   kept, and every step can be reverted or baked in later.
@@ -240,9 +241,12 @@ touch Pages.
 ## Test it
 
 ```sh
-npm test    # bridge end-to-end + the extension + the Home Assistant add-on
+npm test    # the frontend helpers + the bridge + the extension + the Home Assistant add-on
 ```
 
+- `assets/test/util.test.mjs` and `assets/test/bridge.test.mjs` cover the frontend's
+  browser-independent logic in Node: filename safety, the concurrency pool, bridge
+  address and pairing-code parsing, and the multipart body a multi-page scan returns.
 - `bridge/test/bridge.test.mjs` drives a private bridge, a paired LAN bridge, a
   PDF-refusing device and the Bonjour responder against a mock eSCL scanner, with the
   real client module — so multipart parsing, token auth, static serving,
@@ -312,6 +316,7 @@ docs/self-contained.md  what is vendored, its size, and how to update it
 repository.yaml         the Home Assistant add-on repository manifest
 scanlet_bridge/         the Home Assistant add-on (config.yaml, Dockerfile, run.mjs)
 tests/share-post.html   manual harness for the share target
+assets/test/            Node tests for the frontend helper modules
 vendor/                 the vendored libraries (see docs/self-contained.md)
 icons/, tools/          generated PNG icons, the icon generator, and the scripts:
                         tools/vendor.mjs, tools/serve.mjs, tools/build-extension.mjs,
