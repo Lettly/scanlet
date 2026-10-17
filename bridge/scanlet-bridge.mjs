@@ -583,7 +583,7 @@ function readBody(request) {
  * @param {string} [options.token]   when set, every device/scan route needs it
  * @param {string} [options.appDir]  directory to serve the Scanlet app from
  */
-export function createHandler({ log = () => {}, token = '', appDir = '', lan = false, port = 0 } = {}) {
+export function createHandler({ log = () => {}, token = '', appDir = '', lan = false, port = 0, certificatePath = '' } = {}) {
   let cache = { at: 0, printers: [], caps: new Map() };
   const manual = new Map(); // id → printer, added by address
 
@@ -609,6 +609,69 @@ export function createHandler({ log = () => {}, token = '', appDir = '', lan = f
     const printer = printers.find((candidate) => candidate.id === decoded);
     if (!printer) throw new Error('That device is no longer on the network. Scan for printers again.');
     return printer;
+  }
+
+  const SCAN_FORMATS = {
+    pdf: 'application/pdf',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+  };
+
+  /**
+   * One scan, one plain URL: `/printers/<id>/scan.pdf` or `.jpg`.
+   *
+   * This exists so anything that can only fetch a URL can still scan — an iOS
+   * Shortcut ("Get Contents of URL" → "Save to Files"), a cron job, a curl one
+   * liner. PDF is asked of the device itself, which assembles a multi-page ADF
+   * job server-side; if the device refuses, we fall back to the first page as
+   * an image rather than pretending.
+   */
+  async function serveSingleScan(response, printer, extension, url) {
+    const caps = cache.caps.get(printer.id) || (await capabilities(printer));
+    const query = url.searchParams;
+    const wantsPdf = extension === 'pdf';
+    const wanted = SCAN_FORMATS[extension];
+
+    const options = {
+      resolution: Number(query.get('resolution') || query.get('dpi')) || 300,
+      colorMode: query.get('colorMode') || query.get('color') || 'RGB24',
+      inputSource:
+        (query.get('inputSource') || query.get('source') || '').toLowerCase() === 'feeder' ||
+        query.get('adf') === 'true'
+          ? 'Feeder'
+          : 'Platen',
+      duplex: query.get('duplex') === 'true',
+      caps,
+    };
+
+    let pages;
+    if (wantsPdf) {
+      pages = await runScan(printer, { ...options, format: wanted }).catch(() => null);
+      if (!pages) {
+        log('the device refused a PDF job — asking for an image instead');
+        pages = await runScan(printer, { ...options, format: 'image/jpeg' });
+      }
+    } else {
+      pages = await runScan(printer, { ...options, format: wanted });
+    }
+
+    const first = pages[0];
+    const contentType = (first.mime || wanted).split(';')[0];
+    const headers = corsHeaders({
+      'content-type': contentType,
+      'content-length': first.body.length,
+      'cache-control': 'no-store',
+      'content-disposition': `inline; filename="scanlet.${extension}"`,
+    });
+    // Report against what the *caller* asked for, so a Shortcut that wanted a
+    // PDF and got a JPEG can tell.
+    if (contentType !== wanted) headers['x-scanlet-format'] = contentType;
+    if (pages.length > 1) headers['x-scanlet-note'] = `device returned ${pages.length} parts; served the first`;
+
+    log(`single-url scan → ${contentType} (${first.body.length} bytes)`);
+    response.writeHead(200, headers);
+    return response.end(first.body);
   }
 
   return async function handle(request, response) {
@@ -639,9 +702,29 @@ export function createHandler({ log = () => {}, token = '', appDir = '', lan = f
         });
       }
 
+      // ── the TLS certificate, so a phone can install and trust it ──
+      // iOS will not let URLSession (Shortcuts) or the camera trust a
+      // self-signed certificate until it is installed as a profile, and the
+      // only way to get it onto the device is to serve it.
+      if (url.pathname === '/certificate.pem') {
+        if (!certificatePath) return sendJson(response, 404, { error: 'This bridge is not serving TLS.' });
+        try {
+          const pem = fs.readFileSync(certificatePath);
+          response.writeHead(200, corsHeaders({
+            'content-type': 'application/x-pem-file',
+            'content-length': pem.length,
+            'content-disposition': 'attachment; filename="scanlet-bridge.pem"',
+            'cache-control': 'no-store',
+          }));
+          return response.end(pem);
+        } catch {
+          return sendJson(response, 404, { error: 'The certificate file is missing.' });
+        }
+      }
+
       // ── the app itself is public: a phone has to load it *before* it can
       //    present the pairing code it was given ──
-      const isApi = /^\/(health|printers|probe)(\/|$)/.test(url.pathname);
+      const isApi = /^\/(health|printers|probe|scan\.)/.test(url.pathname);
       const isRead = request.method === 'GET' || request.method === 'HEAD';
       if (isRead && appDir && !isApi) {
         if (serveStatic(appDir, url.pathname, response, { head: request.method === 'HEAD' })) {
@@ -676,6 +759,35 @@ export function createHandler({ log = () => {}, token = '', appDir = '', lan = f
         const caps = await capabilities(printer);
         cache.caps.set(printer.id, caps);
         return sendJson(response, 200, caps);
+      }
+
+      // ── a single, bookmarkable URL: /printers/<id>/scan.pdf ──
+      const singleScan = /^scan\.(pdf|jpe?g|png)$/i.exec(parts[2] || '');
+      if (parts[0] === 'printers' && parts.length === 3 && request.method === 'GET' && singleScan) {
+        return serveSingleScan(response, await findPrinter(parts[1]), singleScan[1].toLowerCase(), url);
+      }
+
+      // …and a friendlier form for humans and scripts, with a plain address:
+      //   /scan.pdf?printer=192.168.1.42&token=…
+      const rootScan = /^\/scan\.(pdf|jpe?g|png)$/i.exec(url.pathname);
+      if (rootScan && request.method === 'GET') {
+        const reference = url.searchParams.get('printer') || url.searchParams.get('address') || '';
+        let printer;
+        if (reference) {
+          printer = (await probeAddress(reference)).printer;
+        } else {
+          const known = await allPrinters();
+          if (known.length !== 1) {
+            throw new Error(
+              'Name the printer, for example /scan.pdf?printer=192.168.1.42 — ' +
+                `${known.length} devices are known.`,
+            );
+          }
+          [printer] = known;
+        }
+        const found = await capabilities(printer).catch(() => null);
+        if (found) cache.caps.set(printer.id, found);
+        return serveSingleScan(response, printer, rootScan[1].toLowerCase(), url);
       }
 
       if (parts[0] === 'printers' && parts[2] === 'scan') {
@@ -789,25 +901,24 @@ function main() {
     console.error(`Scanlet: no index.html in ${values.app} — not serving the app.`);
   }
 
-  let server;
   let scheme = 'http';
-  const handler = createHandler({ log, token, appDir, lan, port });
+  let tlsOptions = null;
+  let certificatePath = '';
+
   if (values.tls) {
     try {
       const { keyPath, certPath } = ensureCertificate(path.join(HERE, '.certs'), '127.0.0.1');
-      server = https.createServer(
-        { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) },
-        handler,
-      );
+      certificatePath = certPath;
+      tlsOptions = { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) };
       scheme = 'https';
     } catch (error) {
       console.error(`Scanlet: ${error.message}`);
       console.error('Scanlet: continuing over http instead.');
-      server = http.createServer(handler);
     }
-  } else {
-    server = http.createServer(handler);
   }
+
+  const handler = createHandler({ log, token, appDir, lan, port, certificatePath });
+  const server = tlsOptions ? https.createServer(tlsOptions, handler) : http.createServer(handler);
 
   const addresses = interfaceAddresses();
   const printUrl = (address) => `${scheme}://${address}:${port}/${token ? `#s=${token}` : ''}`;
@@ -830,6 +941,10 @@ function main() {
           console.log('');
           console.log('  Your browser will warn about the self-signed certificate once —');
           console.log('  accept it, and the camera, service worker and PWA install all work.');
+          console.log('');
+          console.log('  iPhone, for a Shortcut or the camera: install the certificate with');
+          console.log(`    http://${addresses[0] || '<your-lan-ip>'}:${port}/certificate.pem`);
+          console.log('  then trust it in Settings → General → About → Certificate Trust Settings.');
         } else if (lan) {
           console.log('');
           console.log('  Over http, a phone cannot use its camera or install the PWA');

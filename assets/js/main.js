@@ -5,7 +5,7 @@
  */
 
 import { loadAll, requestPersistence } from './store.js';
-import { mount } from './app.js';
+import { mount, handleLaunch } from './app.js';
 import { toast, nextFrame } from './util.js';
 import { pdfEnginesReady } from './pdfs.js';
 
@@ -40,6 +40,10 @@ async function boot() {
   }
 
   requestPersistence().catch(() => {});
+
+  // A share or a home-screen shortcut should be acted on as soon as the store
+  // is ready — that is the whole point of launching this way.
+  handleLaunch().catch(() => {});
 
   if (!(await waitForEngines())) {
     toast('The PDF engines did not load — check your connection for import and export.', {

@@ -14,6 +14,7 @@ import * as pdfs from './pdfs.js';
 import * as ocrLib from './ocr.js';
 import * as bridgeLib from './bridge.js';
 import * as qrLib from './qr.js';
+import * as shareLib from './share.js';
 import * as store from './store.js';
 import { CameraCapture, cameraSupported } from './capture.js';
 
@@ -491,6 +492,81 @@ async function addCanvasPage(canvas, { source = 'import', blob = null, at = null
   page.filter = filter;
   if (crop) page.crop = crop;
   return store.addPage(page, { at });
+}
+
+/* ─────────────────────────────── launch: shares and shortcuts ─────────────────────────────── */
+
+/** Strip a query parameter without reloading, so a refresh cannot repeat it. */
+function clearQueryParams(...names) {
+  const url = new URL(location.href);
+  let touched = false;
+  for (const name of names) {
+    if (url.searchParams.has(name)) {
+      url.searchParams.delete(name);
+      touched = true;
+    }
+  }
+  if (touched) history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+}
+
+/** Files another app shared into Scanlet, on Android's share sheet. */
+async function consumeSharedPayload() {
+  const id = shareLib.sharedIdFromUrl();
+  if (shareLib.shareFailedFromUrl()) {
+    clearQueryParams('share');
+    toast('That share could not be read — try sharing the file again.', { kind: 'err' });
+    return;
+  }
+  if (!id) return;
+  clearQueryParams('shared');
+  announce('Receiving shared files');
+
+  let payload = null;
+  try {
+    payload = await shareLib.takeSharedPayload(id);
+  } catch {
+    payload = null;
+  }
+  if (!payload) {
+    toast('That share has already been taken, or was too old.', { kind: 'err' });
+    return;
+  }
+
+  if (payload.files.length) {
+    await importFiles(payload.files);
+    return;
+  }
+
+  const link = shareLib.linkFromShare(payload.text, payload.url);
+  if (!link) {
+    toast(payload.text ? 'Nothing to import from that share.' : 'That share had no files.', {});
+    return;
+  }
+  try {
+    const file = await shareLib.fileFromLink(link);
+    await importFiles([file]);
+  } catch {
+    toast('This site is not allowed to fetch that link — download it, then Import.', {
+      kind: 'err',
+      timeout: 7000,
+    });
+  }
+}
+
+/** The manifest's long-press shortcuts and action links land here. */
+function consumeLaunchAction() {
+  const action = new URLSearchParams(location.search).get('action');
+  if (!action) return;
+  clearQueryParams('action');
+  if (action === 'camera') openCapture();
+  else if (action === 'scanner') openScanner();
+  else if (action === 'import') ui.fileInput.click();
+}
+
+/** Called once the store is ready: a share or a shortcut beats an empty screen. */
+export async function handleLaunch() {
+  await consumeSharedPayload();
+  consumeLaunchAction();
 }
 
 /* ─────────────────────────────── page actions ─────────────────────────────── */

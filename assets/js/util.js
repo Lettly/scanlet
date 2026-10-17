@@ -140,8 +140,24 @@ export function readAsDataURL(blob) {
   });
 }
 
+/**
+ * Wait for the next paint.
+ *
+ * `requestAnimationFrame` never fires while a tab is in the background, and a
+ * share can land in a tab that is not on screen yet (Android brings the app
+ * forward a moment later). Racing it against a timer keeps progress moving.
+ */
 export function nextFrame() {
-  return new Promise((r) => requestAnimationFrame(() => r()));
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    requestAnimationFrame(finish);
+    setTimeout(finish, 50);
+  });
 }
 
 export function createCanvas(width, height) {

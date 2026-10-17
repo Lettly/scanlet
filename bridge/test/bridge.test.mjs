@@ -146,6 +146,8 @@ async function testPrivate() {
 async function testPaired() {
   const env = await pairedBridge();
   const client = new BridgeClient(env.url, env.token);
+  const mock = createMockScanner({ pages: 2 });
+  const mockPort = await listen(mock);
   try {
     const unauth = await fetch(`${env.url}/health`).then((r) => r.json());
     await check('health is open but withholds devices until paired', () => {
@@ -263,13 +265,146 @@ async function testPaired() {
         fs.rmSync(sandbox, { recursive: true, force: true });
       }
     });
+
+    const shared = await client.probeAddress(`127.0.0.1:${mockPort}`);
+    await check('a Shortcut can scan with one URL, pairing code included', async () => {
+      // No headers: this is what "Get Contents of URL" can actually do.
+      const response = await fetch(
+        `${env.url}/printers/${encodeURIComponent(shared.printer.id)}/scan.pdf?token=${encodeURIComponent(env.token)}`,
+      );
+      assert.equal(response.status, 200);
+      assert.match(response.headers.get('content-type'), /application\/pdf/);
+      const bytes = Buffer.from(await response.arrayBuffer());
+      assert.equal(bytes.subarray(0, 5).toString('latin1'), '%PDF-');
+      assert.match(bytes.subarray(-8).toString('latin1'), /%%EOF/);
+    });
+
+    await check('the same URL without the code is refused', async () => {
+      const response = await fetch(`${env.url}/printers/${encodeURIComponent(shared.printer.id)}/scan.pdf`);
+      assert.equal(response.status, 401);
+      await response.arrayBuffer();
+    });
+    await check('the TLS certificate is downloadable for a phone to trust', async () => {
+      const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'scanlet-cert-'));
+      const pemPath = path.join(sandbox, 'cert.pem');
+      fs.writeFileSync(pemPath, '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n');
+
+      const withCert = createServer({ log: () => {}, certificatePath: pemPath });
+      const withoutCert = createServer({ log: () => {} });
+      const certPort = await listen(withCert);
+      const plainPort = await listen(withoutCert);
+      try {
+        const response = await fetch(`http://127.0.0.1:${certPort}/certificate.pem`);
+        assert.equal(response.status, 200);
+        assert.match(response.headers.get('content-type'), /pem/);
+        assert.match(await response.text(), /BEGIN CERTIFICATE/);
+
+        const none = await fetch(`http://127.0.0.1:${plainPort}/certificate.pem`);
+        assert.equal(none.status, 404, 'a bridge without TLS has no certificate to give');
+        await none.json();
+      } finally {
+        withCert.close();
+        withoutCert.close();
+        fs.rmSync(sandbox, { recursive: true, force: true });
+      }
+    });
   } finally {
     env.close();
+    mock.close();
+  }
+}
+
+async function testSingleUrl() {
+  // Two devices: one assembles PDFs itself, one refuses and only gives images.
+  const pdfDevice = createMockScanner({ pages: 3 });
+  const imageDevice = createMockScanner({ pages: 3, pdf: false });
+  const pdfPort = await listen(pdfDevice);
+  const imagePort = await listen(imageDevice);
+  const bridge = createServer({ log: () => {} });
+  const bridgePort = await listen(bridge);
+  const url = `http://127.0.0.1:${bridgePort}`;
+
+  try {
+    const client = new BridgeClient(url);
+    const pdfPrinter = (await client.probeAddress(`127.0.0.1:${pdfPort}`)).printer;
+    const imagePrinter = (await client.probeAddress(`127.0.0.1:${imagePort}`)).printer;
+
+    const asPdf = await fetch(`${url}/printers/${encodeURIComponent(pdfPrinter.id)}/scan.pdf`);
+    const pdfBytes = Buffer.from(await asPdf.arrayBuffer());
+    await check('scan.pdf returns a real PDF from a capable device', () => {
+      assert.equal(asPdf.status, 200);
+      assert.match(asPdf.headers.get('content-type'), /application\/pdf/);
+      assert.equal(pdfBytes.subarray(0, 5).toString('latin1'), '%PDF-');
+      assert.match(pdfBytes.subarray(-8).toString('latin1'), /%%EOF/);
+    });
+
+    const asJpg = await fetch(`${url}/printers/${encodeURIComponent(pdfPrinter.id)}/scan.jpg`);
+    const jpgBytes = Buffer.from(await asJpg.arrayBuffer());
+    await check('scan.jpg returns a JPEG', () => {
+      assert.equal(asJpg.status, 200);
+      assert.match(asJpg.headers.get('content-type'), /image\/jpeg/);
+      assert.equal(jpgBytes[0], 0xff);
+      assert.equal(jpgBytes[1], 0xd8);
+    });
+
+    const fallback = await fetch(`${url}/printers/${encodeURIComponent(imagePrinter.id)}/scan.pdf`);
+    const fallbackBytes = Buffer.from(await fallback.arrayBuffer());
+    await check('scan.pdf falls back to an image and says so', () => {
+      assert.equal(fallback.status, 200);
+      assert.match(fallback.headers.get('content-type'), /image\/jpeg/);
+      // The caller asked for a PDF and must be able to tell it did not get one.
+      assert.equal(fallback.headers.get('x-scanlet-format'), 'image/jpeg');
+      assert.equal(fallbackBytes[0], 0xff);
+      assert.equal(fallbackBytes[1], 0xd8);
+    });
+
+    const mismatch = await fetch(`${url}/printers/${encodeURIComponent(pdfPrinter.id)}/scan.png`);
+    const mismatchBytes = Buffer.from(await mismatch.arrayBuffer());
+    await check('a requested format the device ignores is reported, not disguised', () => {
+      assert.equal(mismatch.status, 200);
+      assert.match(mismatch.headers.get('content-type'), /image\/jpeg/);
+      assert.equal(mismatch.headers.get('x-scanlet-format'), 'image/jpeg');
+      assert.ok(mismatchBytes.length > 0);
+    });
+
+    const unsupported = await fetch(`${url}/printers/${encodeURIComponent(pdfPrinter.id)}/scan.bmp`);
+    await check('an unsupported extension is not a scan route', () => {
+      assert.equal(unsupported.status, 404);
+    });
+
+    const onDemand = await fetch(
+      `${url}/printers/${encodeURIComponent(pdfPrinter.id)}/scan.jpg?resolution=75&adf=true&color=Grayscale8`,
+    );
+    await check('query options are accepted on the single-URL route', async () => {
+      assert.equal(onDemand.status, 200);
+      await onDemand.arrayBuffer();
+    });
+
+    // The form a human types into a Shortcut: a plain address, no opaque id.
+    const friendly = await fetch(`${url}/scan.pdf?printer=127.0.0.1:${imagePort}`);
+    const friendlyBytes = Buffer.from(await friendly.arrayBuffer());
+    await check('a plain address works instead of an opaque id', () => {
+      assert.equal(friendly.status, 200);
+      assert.match(friendly.headers.get('content-type'), /image\/jpeg/);
+      assert.equal(friendlyBytes[0], 0xff);
+    });
+
+    const ambiguous = await fetch(`${url}/scan.pdf`);
+    await check('an ambiguous request explains itself instead of guessing', async () => {
+      assert.equal(ambiguous.status, 502);
+      const body = await ambiguous.json();
+      assert.match(body.error, /Name the printer/);
+    });
+  } finally {
+    bridge.close();
+    pdfDevice.close();
+    imageDevice.close();
   }
 }
 
 async function main() {
   await testPrivate();
+  await testSingleUrl();
   await testPaired();
 
   let failed = 0;

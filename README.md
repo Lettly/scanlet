@@ -119,23 +119,44 @@ shows a QR code so the next device can join with one scan.
 | `--port`, `--host`, `--quiet` | as you would expect |
 | `--app <dir>`, `--no-serve` | where the app lives, or do not serve it at all |
 
-### Mobile, honestly
+Beyond the app's own API, one URL scans on demand — for Shortcuts, Tasker, `curl` or a
+cron job:
 
-**A browser on a phone still cannot reach a printer on its own** — no sockets, no
-mDNS, and the same CORS wall. No PWA can change that, and iOS offers no extension
-mechanism that could.
+```sh
+curl -o scan.pdf 'http://192.168.1.50:8787/scan.pdf?printer=192.168.1.42&token=CODE'
+```
 
-What *does* work is the bridge serving the app:
+It asks the *device* for a PDF, so a multi-page ADF job comes back as one document; if
+the device cannot, you get the first page as an image and an `x-scanlet-format` header
+saying so. `GET /certificate.pem` serves the TLS certificate so a phone can install and
+trust it.
 
-| How | What you get |
-|---|---|
-| `--lan`, plain http | full scanning on the phone. No camera, no offline cache, no install — browsers only treat **https** and localhost as secure |
-| `--lan --tls` | everything: scanning, camera capture, service worker, **Add to Home Screen** |
-| Camera in the PWA | works today with no bridge at all |
+### Mobile: iPhone and Android
 
-With `--tls` your browser warns about the self-signed certificate once. Accept it, and
-the address you are on becomes a proper secure origin. The app is installable at that
-address and behaves like an app.
+**A browser on a phone still cannot reach a printer on its own** — no sockets, no mDNS,
+and the same CORS wall. No PWA can change that, and neither platform offers a web app a
+way around it. So the bridge serves the app, and each platform gets an extra native
+integration:
+
+| | iPhone / iPad | Android |
+|---|---|---|
+| Camera in an installed app | ✅ Add to Home Screen | ✅ install prompt |
+| Scan from a network printer | ✅ `--lan --tls` | ✅ `--lan` (or `--tls`) |
+| Scan from another app into Scanlet | ➖ no share targets in Safari | ✅ **share sheet → Scanlet** |
+| Scan straight to Files, unattended | ✅ **Shortcut + `/scan.pdf`** | ✅ Tasker, `curl` |
+| Home-screen shortcuts | ➖ | ✅ manifest `shortcuts` |
+| Desktop-style extension | ❌ | ❌ Chrome for Android has no extensions |
+
+- **Android** can receive shared files: pick **Scanlet** in any app's share sheet. The
+  service worker takes the POST, stashes it, and the app imports it.
+- **iOS** has no share targets, so the bridge answers a single URL —
+  `/scan.pdf?printer=192.168.1.42&token=…` — which a Shortcut can fetch and save to
+  Files, straight from a printer, with no app open.
+- **`--tls` is what makes the address a secure origin**: camera, offline shell and
+  **Add to Home Screen** all need it. Plain `--lan` still scans.
+
+Full detail, including the certificate-trust steps iOS needs and the exact native-app
+recipe if you want one: **[docs/mobile.md](docs/mobile.md)**.
 
 Storage is per-origin, so documents kept at the bridge's address are separate from
 documents kept at the GitHub Pages address. Pick one and stay there.
@@ -176,15 +197,17 @@ touch Pages.
 npm test    # bridge end-to-end + the extension's printer layer
 ```
 
-- `bridge/test/bridge.test.mjs` drives a private bridge **and** a paired LAN bridge
-  against a mock eSCL scanner, with the real client module — so multipart parsing,
-  token auth, static serving and path-traversal refusal are all covered.
+- `bridge/test/bridge.test.mjs` drives a private bridge, a paired LAN bridge and a
+  PDF-refusing device against a mock eSCL scanner, with the real client module — so
+  multipart parsing, token auth, static serving, path-traversal refusal, the
+  single-URL scan endpoints and the certificate route are all covered.
 - `extension/test/escl.test.mjs` drives the extension's `fetch`-only modules against
   the same mock, covering capability parsing, scan-region arithmetic and ADF streaming.
 
-There is also an in-app smoke test: **⋮ → About Scanlet → Run diagnostics** checks
-perspective warp, edge detection, adaptive B&W, deskew, border trim, rotation, PDF
-export (outline, text layer, watermark, N-up) and IndexedDB.
+Two things are exercised in a browser rather than in Node, because they need one:
+**⋮ → About Scanlet → Run diagnostics** covers the whole image and PDF pipeline, and
+`tests/share-post.html` submits the Android share target's POST so the
+worker-stash-then-import path can be driven from a desktop.
 
 ## Keyboard shortcuts
 
@@ -219,11 +242,14 @@ assets/js/
   ocr.js                Tesseract.js worker pool
   bridge.js             clients for the bridge and the browser extension
   qr.js                 QR codes, for handing a session to another device
-sw.js                   offline app shell + runtime caching for CDN libraries
+  share.js              the app side of the Android share target
+sw.js                   offline shell, plus the POST endpoint a share target needs
 bridge/                 the scanning bridge (Node, no dependencies)
 bridge/test/            mock eSCL scanner + its end-to-end tests
 extension/              the Chrome/Edge plugin (MV3)
 extension/test/         tests for its printer layer
+docs/mobile.md          what works on iOS and Android, and what does not
+tests/share-post.html   manual harness for the share target
 icons/, tools/          generated PNG icons and the generator
 ```
 
@@ -261,7 +287,12 @@ talk only to printers you point them at. The bridge keeps its pairing code in th
 - **A phone browser cannot scan a printer by itself.** Use the bridge's `--lan` mode,
   or the camera. This is a platform limit that no web app can work around.
 - **Plain-http `--lan` is not a secure origin**, so on a phone you lose the camera, the
-  offline cache and PWA installation. Add `--tls` for those.
+  offline cache and PWA installation. Add `--tls` for those, and trust the certificate
+  on iOS (see [docs/mobile.md](docs/mobile.md)).
+- **Share targets and home-screen shortcuts are Android-only** — Safari implements
+  neither. On iOS, the equivalent is a Shortcut against `/scan.pdf`.
+- **No native iOS or Android app ships here.** The recipe, and the single interface a
+  native shell has to implement, is in [docs/mobile.md](docs/mobile.md).
 - **Anyone with the pairing link can use your printers.** Treat it like a password;
   it is printed rather than emailed for that reason. Do not expose the bridge to the
   internet.
