@@ -53,6 +53,7 @@ function cacheDom() {
   ui.empty = $('#empty-state');
   ui.docList = $('#doc-list');
   ui.inspector = $('#inspector');
+  ui.inspEmpty = $('#insp-empty');
   ui.rail = $('#rail');
   ui.docTitle = $('#doc-title');
   ui.docMeta = $('#doc-meta');
@@ -61,6 +62,7 @@ function cacheDom() {
   ui.projectInput = $('#project-input');
   ui.dropzone = $('#dropzone');
   ui.menu = $('#app-menu');
+  ui.addMenu = $('#add-menu');
   ui.toasts = $('#toasts');
   ui.progress = {
     modal: $('#modal-progress'),
@@ -100,6 +102,8 @@ function renderDocHeader(doc) {
   if (ocrDone) parts.push(`${ocrDone} with text`);
   const edited = doc.pages.filter(isEdited).length;
   if (edited) parts.push(`${edited} adjusted`);
+  const selected = store.state.selection.size;
+  if (selected) parts.push(`${selected} selected`);
   ui.docMeta.textContent = parts.join(' · ');
 }
 
@@ -275,6 +279,11 @@ function renderInspector() {
     ? `${count} page${count === 1 ? '' : 's'} selected`
     : 'No pages selected';
 
+  // With nothing selected the controls cannot do anything, so show a short,
+  // useful prompt instead of a column of greyed-out buttons.
+  ui.inspector.classList.toggle('has-selection', count > 0);
+  if (ui.inspEmpty) ui.inspEmpty.hidden = count > 0;
+
   /*
    * Below 980px the CSS lays the inspector out as a bottom sheet, off-screen
    * until it is given `.open`. Nothing used to add that class, which left every
@@ -397,6 +406,12 @@ function onKeyDown(event) {
     return;
   }
   if (typing) return;
+
+  if (!modalOpen && event.key === '?') {
+    event.preventDefault();
+    openModal($('#modal-shortcuts'));
+    return;
+  }
 
   const mod = event.metaKey || event.ctrlKey;
   if (mod && event.key.toLowerCase() === 'a') {
@@ -2089,6 +2104,7 @@ function bindAppBar() {
   $('#act-scanner').addEventListener('click', openScanner);
   $('#act-export').addEventListener('click', openExport);
   $('#btn-new-doc').addEventListener('click', newDocument);
+  $('#btn-theme-bar').addEventListener('click', cycleTheme);
   $('#btn-menu').addEventListener('click', () => {
     const open = ui.rail.classList.toggle('open');
     // One panel at a time: the rail would sit on top of the actions sheet.
@@ -2111,7 +2127,24 @@ function bindAppBar() {
   });
   document.addEventListener('click', () => {
     ui.menu.hidden = true;
+    ui.addMenu.hidden = true;
     menuButton.setAttribute('aria-expanded', 'false');
+  });
+
+  // The compact "Add" button phones get in place of Import / Camera / Scanner.
+  const addButton = $('#btn-add');
+  addButton.addEventListener('click', (event) => {
+    event.stopPropagation();
+    ui.addMenu.hidden = !ui.addMenu.hidden;
+    addButton.setAttribute('aria-expanded', String(!ui.addMenu.hidden));
+  });
+  ui.addMenu.addEventListener('click', (event) => {
+    const action = event.target.closest('button')?.dataset.add;
+    if (!action) return;
+    ui.addMenu.hidden = true;
+    if (action === 'import') ui.fileInput.click();
+    else if (action === 'camera') openCapture();
+    else if (action === 'scanner') openScanner();
   });
   ui.menu.addEventListener('click', async (event) => {
     const action = event.target.closest('button')?.dataset.menu;
@@ -2133,6 +2166,7 @@ function bindAppBar() {
         await bakeSelection();
       },
       'remove-blank': removeBlankPages,
+      shortcuts: () => openModal($('#modal-shortcuts')),
       settings: openExport,
       about: openAbout,
     };
@@ -2155,10 +2189,12 @@ function bindAppBar() {
 }
 
 function bindInspector() {
-  $('#btn-select-all').addEventListener('click', () => {
+  const selectAll = () => {
     const doc = store.activeDoc();
     if (doc?.pages.length) store.setSelection(doc.pages.map((p) => p.id));
-  });
+  };
+  $('#btn-select-all').addEventListener('click', selectAll);
+  $('#insp-select-all').addEventListener('click', selectAll);
   $('#btn-clear-sel').addEventListener('click', () => store.setSelection([]));
   ui.filterSeg.addEventListener('click', (event) => {
     const filter = event.target.closest('button')?.dataset.filter;
@@ -2284,7 +2320,7 @@ function bindModals() {
     toast('Command copied');
   });
   $('#btn-selftest').addEventListener('click', runSelfTest);
-  $('#btn-theme').addEventListener('click', toggleTheme);
+  $('#btn-theme').addEventListener('click', cycleTheme);
 }
 
 function changeEditorRotation(delta) {
@@ -2362,16 +2398,45 @@ async function withProgress(title, task) {
 /* ─────────────────────────────── misc ─────────────────────────────── */
 
 function applyStoredTheme() {
-  const stored = localStorage.getItem('scanlet:theme');
-  if (stored) document.documentElement.dataset.theme = stored;
-  else document.documentElement.dataset.theme = 'auto';
+  let stored = null;
+  try {
+    stored = localStorage.getItem('scanlet:theme');
+  } catch {
+    stored = null;
+  }
+  document.documentElement.dataset.theme = stored || 'auto';
+  updateThemeButton();
 }
 
-function toggleTheme() {
-  const current = document.documentElement.dataset.theme;
-  const next = current === 'dark' ? 'light' : 'dark';
+const THEMES = ['auto', 'light', 'dark'];
+const THEME_ICONS = {
+  auto: '<circle cx="12" cy="12" r="9"/><path d="M12 3v18" /><path d="M12 3a9 9 0 000 18z" fill="currentColor" stroke="none"/>',
+  light:
+    '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  dark: '<path d="M20.5 14.2A8.5 8.5 0 019.8 3.5 8.5 8.5 0 1020.5 14.2z"/>',
+};
+
+function updateThemeButton() {
+  const button = $('#btn-theme-bar');
+  if (!button) return;
+  const theme = document.documentElement.dataset.theme || 'auto';
+  button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true">${THEME_ICONS[theme] || THEME_ICONS.auto}</svg>`;
+  button.title = `Theme: ${theme}`;
+  button.setAttribute('aria-label', `Theme: ${theme}. Activate to change.`);
+}
+
+/** Cycle auto → light → dark, remembering the choice. */
+function cycleTheme() {
+  const current = document.documentElement.dataset.theme || 'auto';
+  const next = THEMES[(THEMES.indexOf(current) + 1) % THEMES.length];
   document.documentElement.dataset.theme = next;
-  localStorage.setItem('scanlet:theme', next);
+  try {
+    localStorage.setItem('scanlet:theme', next);
+  } catch {
+    /* private mode: the choice just will not persist */
+  }
+  updateThemeButton();
+  toast(`Theme: ${next}`);
 }
 
 async function updateStorageLabel() {

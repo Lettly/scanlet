@@ -77,6 +77,15 @@ svg circle { fill: currentColor; stroke: none; }
 
 button { font: inherit; color: inherit; }
 
+/* A clear ring for keyboard users, without a permanent outline for mice. */
+button:focus-visible,
+a:focus-visible,
+[role="button"]:focus-visible,
+[role="option"]:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--brand) 75%, transparent);
+  outline-offset: 2px;
+}
+
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .muted { color: var(--muted); font-size: 12px; }
 .spacer { flex: 1; }
@@ -116,6 +125,9 @@ button { font: inherit; color: inherit; }
 .doc-title:focus { outline: none; border-color: var(--brand); background: var(--surface); }
 
 .appbar-actions { display: flex; align-items: center; gap: 8px; }
+/* On phones the three add-actions collapse into one button, so the document
+   name keeps a readable width instead of being squeezed to a single letter. */
+#btn-add { display: none; }
 
 /* ── controls ────────────────────────────────────────────── */
 .btn {
@@ -144,6 +156,8 @@ button { font: inherit; color: inherit; }
 }
 .icon-btn:hover { background: var(--surface-2); color: var(--text); }
 .icon-btn[aria-pressed="true"] { background: var(--brand-soft); color: var(--brand); }
+/* The shared rule fills every circle; the theme glyphs need their outlines. */
+.theme-btn svg circle { fill: none; stroke: currentColor; }
 
 .input {
   font: inherit; color: var(--text); background: var(--surface);
@@ -179,6 +193,16 @@ input[type="range"] { width: 100%; accent-color: var(--brand); margin: 4px 0 0; 
 .hint { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
 .hint.inline { margin: 0; }
 .code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); border-radius: var(--radius-sm); padding: 10px 12px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+
+kbd {
+  font-family: var(--mono); font-size: 11px; line-height: 1.6;
+  background: var(--surface-2); border: 1px solid var(--border); border-bottom-width: 2px;
+  border-radius: 5px; padding: 1px 6px; color: var(--text);
+}
+.shortcuts { width: 100%; border-collapse: collapse; }
+.shortcuts td { padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.shortcuts tr:last-child td { border-bottom: 0; }
+.shortcuts td:first-child { width: 46%; white-space: nowrap; color: var(--muted); }
 
 /* ── layout ──────────────────────────────────────────────── */
 .layout { flex: 1; display: flex; min-height: 0; }
@@ -229,8 +253,10 @@ input[type="range"] { width: 100%; accent-color: var(--brand); margin: 4px 0 0; 
 .tag.src { background: color-mix(in srgb, var(--brand) 14%, transparent); color: var(--brand); }
 .page-card .sel-dot {
   position: absolute; top: 8px; left: 8px; width: 20px; height: 20px; border-radius: 999px;
-  border: 1.5px solid var(--border); background: color-mix(in srgb, var(--surface) 80%, transparent);
-  display: grid; place-items: center; font-size: 12px; color: transparent; backdrop-filter: blur(3px);
+  border: 1.5px solid color-mix(in srgb, #111 26%, transparent);
+  background: rgba(255, 255, 255, .92);
+  display: grid; place-items: center; font-size: 12px; color: transparent;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .28);
 }
 .page-card[aria-selected="true"] .sel-dot { background: var(--brand); border-color: var(--brand); color: #fff; }
 .page-card .card-menu-btn { position: absolute; top: 6px; right: 6px; background: color-mix(in srgb, var(--surface) 85%, transparent); opacity: 0; }
@@ -261,6 +287,22 @@ input[type="range"] { width: 100%; accent-color: var(--brand); margin: 4px 0 0; 
 .insp-head strong { flex: 1; font-size: 13px; }
 .insp-group { border-top: 1px solid var(--border); padding: 12px 0 6px; }
 .insp-group:first-of-type { border-top: 0; }
+/* Nothing selected: the controls cannot do anything, so the panel shows a
+   prompt instead of a column of greyed-out buttons. */
+.inspector:not(.has-selection) .insp-group { display: none; }
+.insp-empty {
+  display: flex; flex-direction: column; align-items: center; text-align: center;
+  gap: 8px; padding: 32px 14px; color: var(--muted);
+}
+.insp-empty[hidden] { display: none; }
+.insp-empty-art {
+  width: 52px; height: 52px; border-radius: 16px; display: grid; place-items: center;
+  background: var(--brand-soft); color: var(--brand);
+}
+.insp-empty-art svg { width: 26px; height: 26px; }
+.insp-empty strong { color: var(--text); font-size: 14px; }
+.insp-empty .hint { margin: 0; max-width: 30ch; }
+.insp-empty .btn { margin-top: 6px; }
 .insp-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 8px; }
 .btn-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
 .btn-row .btn { flex: 1 1 auto; }
@@ -429,6 +471,12 @@ code { font-family: var(--mono); font-size: .92em; background: var(--surface-2);
   .page-grid { grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 12px; }
   #modal-capture .sheet-body { flex-direction: column; }
   .cam-side { flex: 0 0 auto; }
+}
+
+@media (max-width: 560px) {
+  /* One Add button instead of three, so the title is not squeezed away. */
+  #act-import, #act-camera, #act-scanner { display: none; }
+  #btn-add { display: inline-flex; }
 }
 
 /* A touch screen has no hover, so anything revealed only on hover is invisible. */

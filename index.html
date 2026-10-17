@@ -41,6 +41,10 @@
   </div>
 
   <div class="appbar-actions">
+    <button class="btn primary" id="btn-add" title="Add pages" aria-haspopup="menu" aria-expanded="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      <span>Add</span>
+    </button>
     <button class="btn" id="act-import" title="Import images or PDFs">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
       <span>Import</span>
@@ -58,6 +62,7 @@
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V8m0 0l-4 4m4-4l4 4M4 4h16"/></svg>
       <span>Export PDF</span>
     </button>
+    <button class="icon-btn theme-btn" id="btn-theme-bar" title="Theme" aria-label="Theme"></button>
     <button class="icon-btn" id="btn-app-menu" title="More" aria-haspopup="menu" aria-expanded="false">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
     </button>
@@ -73,8 +78,15 @@
     <button role="menuitem" data-menu="flatten-all">Apply &amp; bake edits on all pages</button>
     <button role="menuitem" data-menu="remove-blank">Remove blank pages…</button>
     <hr />
+    <button role="menuitem" data-menu="shortcuts">Keyboard shortcuts</button>
     <button role="menuitem" data-menu="settings">Export defaults…</button>
     <button role="menuitem" data-menu="about">About Scanlet</button>
+  </div>
+
+  <div class="menu" id="add-menu" role="menu" hidden>
+    <button role="menuitem" data-add="import">Import files…</button>
+    <button role="menuitem" data-add="camera">Use the camera</button>
+    <button role="menuitem" data-add="scanner">Scan a printer…</button>
   </div>
 </header>
 
@@ -123,6 +135,15 @@
       <button class="icon-btn" id="btn-clear-sel" title="Clear selection" aria-label="Clear selection">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
       </button>
+    </div>
+
+    <div class="insp-empty" id="insp-empty">
+      <div class="insp-empty-art">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h10M4 18h7"/></svg>
+      </div>
+      <strong>Nothing selected</strong>
+      <p class="hint">Tap a page to transform, enhance or export it — or work on the whole document at once.</p>
+      <button class="btn sm" id="insp-select-all">Select all pages</button>
     </div>
 
     <section class="insp-group" data-when="selection">
@@ -504,6 +525,35 @@
   </div>
 </div>
 
+<!-- ─────────────────────────  keyboard shortcuts  ───────────────────────── -->
+<div class="modal" id="modal-shortcuts" hidden>
+  <div class="sheet narrow">
+    <header class="sheet-head">
+      <strong>Keyboard shortcuts</strong>
+      <button class="icon-btn" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <div class="sheet-body">
+      <table class="shortcuts">
+        <tbody>
+          <tr><td><kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>O</kbd></td><td>Import files</td></tr>
+          <tr><td><kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>A</kbd></td><td>Select all pages</td></tr>
+          <tr><td><kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>Z</kbd></td><td>Undo</td></tr>
+          <tr><td><kbd>⌘</kbd>/<kbd>Ctrl</kbd> + <kbd>E</kbd></td><td>Export PDF</td></tr>
+          <tr><td><kbd>[</kbd> / <kbd>]</kbd></td><td>Rotate selection left / right</td></tr>
+          <tr><td><kbd>1</kbd>–<kbd>5</kbd></td><td>Original, Enhance, Gray, B&amp;W, Magic</td></tr>
+          <tr><td><kbd>Enter</kbd></td><td>Open the selected page in the editor</td></tr>
+          <tr><td><kbd>Delete</kbd></td><td>Delete the selection</td></tr>
+          <tr><td><kbd>Esc</kbd></td><td>Close the open dialog</td></tr>
+          <tr><td><kbd>?</kbd></td><td>Show this list</td></tr>
+        </tbody>
+      </table>
+      <p class="hint">Double-click a page for the corner editor; right-click or the ⋮ button on a card for its page menu.</p>
+    </div>
+  </div>
+</div>
+
 <!-- ─────────────────────────  export  ───────────────────────── -->
 <div class="modal" id="modal-export" hidden>
   <div class="sheet wide">
@@ -679,7 +729,7 @@
       runtime. The diagnostics below confirm it.</p>
       <p class="hint" id="about-versions"></p>
       <div class="btn-row">
-        <button class="btn" id="btn-theme">Toggle theme</button>
+        <button class="btn" id="btn-theme">Change theme</button>
         <button class="btn" id="btn-selftest">Run diagnostics</button>
       </div>
       <pre class="code" id="selftest-out" hidden></pre>

@@ -284,6 +284,7 @@ on every push.
 | `Enter` | Open the selected page in the editor |
 | `Delete` | Delete the selection |
 | `Esc` | Close the open dialog |
+| `?` | Show the keyboard shortcuts |
 
 Double-click a page for the corner editor; right-click for the page menu.
 
