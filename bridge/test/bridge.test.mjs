@@ -12,12 +12,20 @@
  */
 
 import assert from 'node:assert/strict';
+import dgram from 'node:dgram';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMockScanner } from './mock-scanner.mjs';
-import { createServer, createToken } from '../scanlet-bridge.mjs';
+import {
+  buildAnnouncement,
+  createResponder,
+  createServer,
+  createToken,
+  parseMessage,
+  summariseBridges,
+} from '../scanlet-bridge.mjs';
 import { BridgeClient } from '../../assets/js/bridge.js';
 
 const PAGES = 4;
@@ -395,6 +403,22 @@ async function testSingleUrl() {
       const body = await ambiguous.json();
       assert.match(body.error, /Name the printer/);
     });
+
+    // Regression: this route used to `return` a promise from inside its own
+    // try/catch, so a failure escaped as an unhandled rejection and killed the
+    // process — taking every other request with it.
+    const unreachable = await fetch(`${url}/scan.pdf?printer=127.0.0.1:1`);
+    await check('an unreachable printer is an error, not a fatal crash', async () => {
+      assert.equal(unreachable.status, 502);
+      const body = await unreachable.json();
+      assert.match(body.error, /No eSCL scanner answered/);
+    });
+
+    await check('the bridge still answers after that failure', async () => {
+      const response = await fetch(`${url}/health`);
+      assert.equal(response.status, 200);
+      await response.json();
+    });
   } finally {
     bridge.close();
     pdfDevice.close();
@@ -402,10 +426,111 @@ async function testSingleUrl() {
   }
 }
 
+/* ─────────────────────────── discovery ─────────────────────────── */
+
+async function testDiscovery() {
+  const target = { instance: 'scanlet-unit', host: 'scanlet-unit', port: 4321, address: '127.0.0.1' };
+  const txt = { txtvers: '1', vers: '1.2.3', ty: 'Scanlet Bridge', path: '/', tls: '0', token: 'required' };
+
+  await check('the advertisement reads back as a bridge', () => {
+    const found = summariseBridges(parseMessage(buildAnnouncement({ ...target, txt })));
+    assert.equal(found.length, 1, 'the packet should describe exactly one bridge');
+    assert.equal(found[0].name, 'Scanlet Bridge');
+    assert.equal(found[0].address, '127.0.0.1');
+    assert.equal(found[0].port, 4321);
+    assert.equal(found[0].version, '1.2.3');
+    assert.equal(found[0].tokenRequired, true);
+    assert.equal(found[0].url, 'http://127.0.0.1:4321');
+  });
+
+  await check('the advertisement says whether a code is needed, never the code', () => {
+    const secret = 'a-pairing-code-nobody-should-see';
+    const packet = buildAnnouncement({ ...target, txt });
+    assert.ok(!packet.includes(secret), 'a secret must never appear in an mDNS record');
+    assert.ok(packet.includes(Buffer.from('required')), 'but the fact that one is needed should');
+    assert.ok(packet.includes(Buffer.from('Scanlet Bridge')));
+  });
+
+  await check('a non-IPv4 address is refused rather than advertised', () => {
+    assert.throws(() => buildAnnouncement({ ...target, address: 'fe80::1', txt }), /IPv4/);
+  });
+
+  await check('a live responder answers a query', async () => {
+    // On a real network the responder sits on 5353; here it takes an ephemeral
+    // port so the test cannot collide with the system's own mDNS resolver.
+    const responder = createResponder({ ...target, txt, log: () => {}, listen: { port: 0, address: '127.0.0.1' } });
+    await responder.start();
+    const socket = dgram.createSocket('udp4');
+    try {
+      const port = responder.address().port;
+      const answer = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('the responder stayed silent')), 4000);
+        socket.on('message', (message) => {
+          clearTimeout(timer);
+          resolve(message);
+        });
+        socket.bind(0, '127.0.0.1', () => {
+          // A hand-built PTR query carrying the unicast-response bit, so the
+          // reply comes back to this socket rather than to the whole group.
+          const labels = '_scanlet._tcp.local'
+            .split('.')
+            .map((label) => Buffer.concat([Buffer.from([label.length]), Buffer.from(label)]));
+          const header = Buffer.alloc(12);
+          header.writeUInt16BE(1, 4); // one question
+          const tail = Buffer.alloc(4);
+          tail.writeUInt16BE(12, 0); // PTR
+          tail.writeUInt16BE(0x8001, 2); // class IN + unicast response
+          const query = Buffer.concat([header, ...labels, Buffer.from([0]), tail]);
+          socket.send(query, 0, query.length, port, '127.0.0.1');
+        });
+      });
+
+      const found = summariseBridges(parseMessage(answer));
+      assert.equal(found.length, 1);
+      assert.equal(found[0].instance, `scanlet-unit._scanlet._tcp.local`);
+      assert.equal(found[0].port, 4321);
+    } finally {
+      socket.close();
+      responder.stop();
+    }
+  });
+
+  await check('an unrelated query is ignored, not answered', async () => {
+    const responder = createResponder({ ...target, txt, log: () => {}, listen: { port: 0, address: '127.0.0.1' } });
+    await responder.start();
+    const socket = dgram.createSocket('udp4');
+    try {
+      const port = responder.address().port;
+      const labels = '_uscan._tcp.local'
+        .split('.')
+        .map((label) => Buffer.concat([Buffer.from([label.length]), Buffer.from(label)]));
+      const header = Buffer.alloc(12);
+      header.writeUInt16BE(1, 4);
+      const tail = Buffer.alloc(4);
+      tail.writeUInt16BE(12, 0);
+      tail.writeUInt16BE(0x8001, 2);
+      const query = Buffer.concat([header, ...labels, Buffer.from([0]), tail]);
+
+      let answered = false;
+      socket.on('message', () => {
+        answered = true;
+      });
+      await new Promise((resolve) => socket.bind(0, '127.0.0.1', resolve));
+      socket.send(query, 0, query.length, port, '127.0.0.1');
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      assert.equal(answered, false, 'a scanner query must not be answered by the bridge');
+    } finally {
+      socket.close();
+      responder.stop();
+    }
+  });
+}
+
 async function main() {
   await testPrivate();
   await testSingleUrl();
   await testPaired();
+  await testDiscovery();
 
   let failed = 0;
   for (const result of results) {

@@ -28,6 +28,9 @@ jobs:
       - name: Extension message-protocol tests
         run: node extension/test/messaging.test.mjs
 
+      - name: Home Assistant add-on tests
+        run: node scanlet_bridge/test/addon.test.mjs
+
       - name: The extension package is submittable
         run: node tools/build-extension.mjs --check
 

@@ -230,6 +230,22 @@ export async function detectBridges({ remember = null, sameOrigin = true } = {})
     add(location.origin, rememberedToken(location.origin));
   }
   add(DEFAULT_BRIDGE, rememberedToken(DEFAULT_BRIDGE));
+
+  /*
+   * Names worth guessing: the default port on whatever host this page came from
+   * (a bridge beside a Home Assistant or an intranet app), and the bridge's own
+   * Bonjour name when the owner ran it with `--name scanlet`.
+   *
+   * Only attempted over http. From an https page the browser blocks plain-http
+   * subresources outright, so these could never succeed there — and a phone on
+   * the published app is exactly that case. A browser cannot browse mDNS, so
+   * that is the wall; the pairing link and its QR code are the way past it.
+   */
+  if (typeof location !== 'undefined' && location.protocol === 'http:') {
+    if (location.hostname) add(`http://${location.hostname}:8787`);
+    add('http://scanlet.local:8787');
+  }
+
   if (remember?.url) add(remember.url, remember.token);
 
   const found = [];

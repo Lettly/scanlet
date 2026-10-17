@@ -23,3 +23,6 @@ scanstation/
 
 # build output
 dist/
+
+# a scratch /data for the Home Assistant add-on during local testing
+.addon-data/

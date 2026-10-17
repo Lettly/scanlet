@@ -14,9 +14,11 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node bridge/test/bridge.test.mjs && node extension/test/escl.test.mjs && node extension/test/messaging.test.mjs",
+    "test": "node bridge/test/bridge.test.mjs && node extension/test/escl.test.mjs && node extension/test/messaging.test.mjs && node scanlet_bridge/test/addon.test.mjs",
     "test:bridge": "node bridge/test/bridge.test.mjs",
     "test:extension": "node extension/test/escl.test.mjs && node extension/test/messaging.test.mjs",
+    "test:addon": "node scanlet_bridge/test/addon.test.mjs",
+    "find-bridge": "node tools/find-bridge.mjs",
     "build:extension": "node tools/build-extension.mjs",
     "check:extension": "node tools/build-extension.mjs --check",
     "vendor": "node tools/vendor.mjs",

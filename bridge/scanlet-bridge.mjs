@@ -38,6 +38,9 @@ const VERSION = '1.1.0';
 const MDNS_ADDR = '224.0.0.251';
 const MDNS_PORT = 5353;
 const SERVICE_TYPES = ['_uscan._tcp.local', '_uscans._tcp.local', '_scanner._tcp.local'];
+
+/** The service this bridge advertises, so other things can find it. */
+const BRIDGE_SERVICE = '_scanlet._tcp.local';
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 
 /* ───────────────────────────── mDNS ───────────────────────────── */
@@ -97,7 +100,8 @@ function parseName(buffer, offset) {
   return { name: labels.join('.'), next: jumped ? offset : position };
 }
 
-function parseMessage(buffer) {
+/** Walk a packet's records. Exported for the tests and for `tools/find-bridge.mjs`. */
+export function parseMessage(buffer) {
   const records = [];
   if (buffer.length < 12) return records;
   const qdcount = buffer.readUInt16BE(4);
@@ -156,7 +160,167 @@ function parseMessage(buffer) {
   return records;
 }
 
-function interfaceAddresses() {
+/**
+ * Just the question section of a packet — what a client is asking for.
+ * `parseMessage` skips questions; a responder needs them.
+ */
+export function parseQuestions(buffer) {
+  const questions = [];
+  if (buffer.length < 12) return questions;
+  const qdcount = buffer.readUInt16BE(4);
+  let offset = 12;
+  for (let i = 0; i < qdcount; i++) {
+    try {
+      const parsed = parseName(buffer, offset);
+      offset = parsed.next;
+      const type = buffer.readUInt16BE(offset);
+      const klass = buffer.readUInt16BE(offset + 2);
+      offset += 4;
+      questions.push({ name: parsed.name, type, klass, unicast: Boolean(klass & 0x8000) });
+    } catch {
+      break;
+    }
+  }
+  return questions;
+}
+
+function encodeTxt(entries) {
+  const parts = [];
+  for (const [key, value] of Object.entries(entries)) {
+    const text = `${key}=${value}`;
+    const bytes = Buffer.from(text, 'utf8');
+    parts.push(Buffer.from([Math.min(bytes.length, 255)]), bytes.subarray(0, 255));
+  }
+  return Buffer.concat(parts);
+}
+
+function encodeRecord(name, type, rdata, { ttl, flush = true } = {}) {
+  const header = Buffer.alloc(10);
+  header.writeUInt16BE(type, 0);
+  // Class IN, with the cache-flush bit on records that supersede older ones.
+  header.writeUInt16BE(flush ? 0x8001 : 0x0001, 2);
+  header.writeUInt32BE(ttl, 4);
+  header.writeUInt16BE(rdata.length, 8);
+  return Buffer.concat([encodeName(name), header, rdata]);
+}
+
+/**
+ * The records that say "a Scanlet bridge is here": PTR, SRV, TXT and A, in one
+ * packet. Deliberately carries no secret — the pairing code is never advertised
+ * — only whether one is needed.
+ */
+export function buildAnnouncement({ instance, host, port, address, txt = {}, ttl = 120 }) {
+  const instanceName = `${instance}.${BRIDGE_SERVICE}`;
+  const target = `${host}.local`;
+
+  const srv = Buffer.alloc(6);
+  srv.writeUInt16BE(0, 0); // priority
+  srv.writeUInt16BE(0, 2); // weight
+  srv.writeUInt16BE(port, 4);
+
+  const octets = String(address).split('.').map(Number);
+  const isIpv4 = octets.length === 4 && octets.every((n) => Number.isInteger(n) && n >= 0 && n <= 255);
+  if (!isIpv4) throw new Error(`Not an IPv4 address: ${address}`);
+  const a = Buffer.from(octets);
+
+  const header = Buffer.alloc(12);
+  header.writeUInt16BE(0, 0); // mDNS uses id 0
+  header.writeUInt16BE(0x8400, 2); // response, authoritative
+  header.writeUInt16BE(0, 4); // qdcount
+  header.writeUInt16BE(4, 6); // ancount
+
+  return Buffer.concat([
+    header,
+    encodeRecord(BRIDGE_SERVICE, TYPE.PTR, encodeName(instanceName), { ttl, flush: false }),
+    encodeRecord(instanceName, TYPE.SRV, Buffer.concat([srv, encodeName(target)]), { ttl }),
+    encodeRecord(instanceName, TYPE.TXT, encodeTxt(txt), { ttl }),
+    encodeRecord(target, TYPE.A, a, { ttl }),
+  ]);
+}
+
+/**
+ * Answer mDNS queries for `_scanlet._tcp.local`.
+ *
+ * This is the one form of discovery that can work on a network at all: browsers
+ * cannot browse mDNS, but the bridge can be *found* by anything that can —
+ * `dns-sd`, `avahi-browse`, `tools/find-bridge.mjs`, and a Home Assistant
+ * integration should one exist.
+ */
+export function createResponder({ instance, host, port, address, txt = {}, log = () => {}, listen = {} } = {}) {
+  const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
+  const listenPort = listen.port || MDNS_PORT;
+  const listenAddress = listen.address;
+  let bound = false;
+
+  socket.on('message', (message, rinfo) => {
+    const questions = parseQuestions(message);
+    const asked = questions.filter(
+      (question) => question.name.toLowerCase() === BRIDGE_SERVICE && question.type === TYPE.PTR,
+    );
+    if (!asked.length) return;
+    let packet;
+    try {
+      packet = buildAnnouncement({ instance, host, port, address, txt });
+    } catch (error) {
+      log(`could not build the advertisement: ${error.message}`);
+      return;
+    }
+    // A query with the unicast-response bit set wants a direct answer; everyone
+    // else gets the multicast one.
+    const wantsUnicast = asked.some((question) => question.unicast);
+    if (wantsUnicast) socket.send(packet, 0, packet.length, rinfo.port, rinfo.address);
+    else socket.send(packet, 0, packet.length, MDNS_PORT, MDNS_ADDR);
+  });
+
+  return {
+    /** The advertisement as it would be sent, for logging or testing. */
+    packet: () => buildAnnouncement({ instance, host, port, address, txt }),
+    /** Where the responder is listening, once started. */
+    address: () => socket.address(),
+    /** Resolves once the socket is listening and the announcement is out. */
+    start() {
+      if (bound) return Promise.resolve();
+      bound = true;
+      return new Promise((resolve, reject) => {
+        const onBindError = (error) => {
+          log(`advertising unavailable: ${error.message}`);
+          reject(error);
+        };
+        socket.once('error', onBindError);
+        socket.bind(listenPort, listenAddress, () => {
+          socket.removeListener('error', onBindError);
+          socket.on('error', (error) => log(`advertising error: ${error.message}`));
+          try {
+            socket.setMulticastTTL(255);
+            socket.addMembership(MDNS_ADDR);
+          } catch {
+            /* without membership we can still answer unicast queries */
+          }
+          // Announce once, so a client that is already browsing hears us.
+          try {
+            const packet = buildAnnouncement({ instance, host, port, address, txt });
+            socket.send(packet, 0, packet.length, MDNS_PORT, MDNS_ADDR, () => {});
+          } catch {
+            /* reported on the next query */
+          }
+          log(`advertising as ${instance}.${BRIDGE_SERVICE} on ${address}:${port}`);
+          resolve();
+        });
+      });
+    },
+    stop() {
+      if (!bound) return;
+      bound = false;
+      try {
+        socket.close();
+      } catch {
+        /* already closed */
+      }
+    },
+  };
+}
+
+export function interfaceAddresses() {
   const out = [];
   for (const list of Object.values(os.networkInterfaces())) {
     for (const net of list || []) {
@@ -167,7 +331,7 @@ function interfaceAddresses() {
 }
 
 /** Query every eSCL-ish service type and collect what the network answers. */
-export function discover({ timeout = 2500 } = {}) {
+export function discover({ timeout = 2500, services = SERVICE_TYPES } = {}) {
   return new Promise((resolve) => {
     const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
     const records = [];
@@ -195,7 +359,7 @@ export function discover({ timeout = 2500 } = {}) {
       } catch {
         /* some platforms refuse the second bind; discovery still works */
       }
-      for (const service of SERVICE_TYPES) {
+      for (const service of services) {
         const query = buildQuery(service, TYPE.PTR);
         socket.send(query, 0, query.length, MDNS_PORT, MDNS_ADDR, () => {});
         for (const address of interfaceAddresses()) {
@@ -206,6 +370,52 @@ export function discover({ timeout = 2500 } = {}) {
 
     setTimeout(finish, timeout);
   });
+}
+
+/**
+ * Fold raw records into the bridges advertising `_scanlet._tcp.local`.
+ * The advertised records carry no secret: whether a pairing code is needed, never
+ * the code itself.
+ */
+export function summariseBridges(records) {
+  const announced = new Set();
+  const srv = new Map();
+  const txt = new Map();
+  const addresses = new Map();
+
+  for (const record of records) {
+    if (record.type === TYPE.PTR && record.name === BRIDGE_SERVICE) announced.add(record.value);
+    else if (record.type === TYPE.SRV) srv.set(record.name, record.value);
+    else if (record.type === TYPE.TXT) txt.set(record.name, record.value);
+    else if ((record.type === TYPE.A || record.type === TYPE.AAAA) && !addresses.has(record.name)) {
+      addresses.set(record.name, record.value);
+    }
+  }
+
+  const bridges = [];
+  for (const instance of announced) {
+    const target = srv.get(instance);
+    const address = target ? addresses.get(target.target) : null;
+    if (!target || !address) continue;
+    const properties = txt.get(instance) || {};
+    const suffix = new RegExp(`\\.${BRIDGE_SERVICE.replace(/\./g, '\\.')}$`, 'i');
+    bridges.push({
+      instance,
+      name: properties.ty || instance.replace(suffix, ''),
+      address,
+      port: target.port,
+      version: properties.vers || '',
+      tokenRequired: properties.token === 'required',
+      url: `http://${address}:${target.port}`,
+    });
+  }
+  return bridges;
+}
+
+/** Ask the network for bridges specifically. */
+export async function discoverBridges({ timeout = 2500 } = {}) {
+  const records = await discover({ timeout, services: [BRIDGE_SERVICE] });
+  return summariseBridges(records);
 }
 
 /** Fold raw records into a list of printers. */
@@ -681,7 +891,29 @@ export function createHandler({ log = () => {}, token = '', appDir = '', lan = f
     return response.end(first.body);
   }
 
-  return async function handle(request, response) {
+  /**
+   * `dispatch` is async, and a rejection that escapes it would otherwise be an
+   * unhandled rejection — which takes the whole process down, mid-scan. A route
+   * that does `return someAsyncThing(...)` leaves the surrounding try/catch
+   * behind (the await happens after the try block exits), so this wrapper is the
+   * backstop rather than a nicety.
+   */
+  return function handle(request, response) {
+    const result = dispatch(request, response);
+    if (!result || typeof result.then !== 'function') return undefined;
+    result.catch((error) => {
+      log(`a request failed unexpectedly: ${error.message}`);
+      try {
+        if (!response.headersSent) sendJson(response, 500, { error: error.message });
+        else response.end();
+      } catch {
+        /* the socket is gone; nothing left to answer */
+      }
+    });
+    return undefined;
+  };
+
+  async function dispatch(request, response) {
     if (request.method === 'OPTIONS') {
       response.writeHead(204, corsHeaders());
       return response.end();
@@ -771,7 +1003,7 @@ export function createHandler({ log = () => {}, token = '', appDir = '', lan = f
       // ── a single, bookmarkable URL: /printers/<id>/scan.pdf ──
       const singleScan = /^scan\.(pdf|jpe?g|png)$/i.exec(parts[2] || '');
       if (parts[0] === 'printers' && parts.length === 3 && request.method === 'GET' && singleScan) {
-        return serveSingleScan(response, await findPrinter(parts[1]), singleScan[1].toLowerCase(), url);
+        return await serveSingleScan(response, await findPrinter(parts[1]), singleScan[1].toLowerCase(), url);
       }
 
       // …and a friendlier form for humans and scripts, with a plain address:
@@ -794,7 +1026,9 @@ export function createHandler({ log = () => {}, token = '', appDir = '', lan = f
         }
         const found = await capabilities(printer).catch(() => null);
         if (found) cache.caps.set(printer.id, found);
-        return serveSingleScan(response, printer, rootScan[1].toLowerCase(), url);
+        // Awaited, so a failure lands in the catch above rather than escaping as
+        // an unhandled rejection.
+        return await serveSingleScan(response, printer, rootScan[1].toLowerCase(), url);
       }
 
       if (parts[0] === 'printers' && parts[2] === 'scan') {
@@ -891,6 +1125,9 @@ function main() {
       tls: { type: 'boolean', default: false },
       token: { type: 'string', default: '' },
       app: { type: 'string', default: '' },
+      name: { type: 'string', default: '' },
+      advertise: { type: 'boolean', default: false },
+      'no-advertise': { type: 'boolean', default: false },
       'no-serve': { type: 'boolean', default: false },
       quiet: { type: 'boolean', default: false },
     },
@@ -903,6 +1140,13 @@ function main() {
   const port = Number(values.port) || 8787;
   const token = values.token || (lan ? createToken() : '');
   const appDir = values['no-serve'] ? '' : resolveAppDir(values.app);
+  // A DNS label, so it can be both the instance name and the SRV target.
+  const name = (values.name || os.hostname().replace(/\.local$/i, ''))
+    .replace(/[^A-Za-z0-9-]/g, '-')
+    .slice(0, 48) || 'scanlet';
+  // Advertising only makes sense on a network interface, which is what --lan
+  // gives you; force it on with --advertise, off with --no-advertise.
+  const advertise = !values['no-advertise'] && (values.advertise || lan);
 
   if (values.app && !appDir) {
     console.error(`Scanlet: no index.html in ${values.app} — not serving the app.`);
@@ -926,6 +1170,7 @@ function main() {
 
   const handler = createHandler({ log, token, appDir, lan, port, certificatePath });
   const server = tlsOptions ? https.createServer(tlsOptions, handler) : http.createServer(handler);
+  let responder = null;
 
   const addresses = interfaceAddresses();
   const printUrl = (address) => `${scheme}://${address}:${port}/${token ? `#s=${token}` : ''}`;
@@ -963,7 +1208,7 @@ function main() {
       }
       console.log('');
     } else {
-      console.log('Open Scanlet, press “Scanner”, then “Connect”. Ctrl-C to stop.');
+      console.log('Open Scanlet, press “Scanner”, then “Connect”.');
     }
     log('looking for scanners over Bonjour…');
     discover({ timeout: 2500 })
@@ -973,6 +1218,51 @@ function main() {
         for (const printer of printers) log(`found ${printer.name} at ${printer.address}:${printer.port}`);
       })
       .catch(() => log('discovery failed; add a device by address instead'));
+
+    if (advertise) {
+      const address = addresses[0];
+      if (!address) {
+        log('no LAN address to advertise on — skipping Bonjour');
+      } else {
+        responder = createResponder({
+          instance: name,
+          host: name,
+          port,
+          address,
+          txt: {
+            txtvers: '1',
+            vers: VERSION,
+            ty: 'Scanlet Bridge',
+            path: '/',
+            tls: scheme === 'https' ? '1' : '0',
+            // Whether a pairing code is needed — never the code itself.
+            token: token ? 'required' : 'none',
+          },
+          log,
+        });
+        responder.start().catch(() => {});
+        console.log('');
+        console.log(`  Findable on your network via Bonjour, as “${name}” (_scanlet._tcp)`);
+        console.log('    browse with: dns-sd -B _scanlet._tcp   or   node tools/find-bridge.mjs');
+      }
+    }
+    console.log('');
+    console.log('Ctrl-C to stop.');
+  });
+
+  const shutdown = () => {
+    responder?.stop();
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 500);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+
+  // A bridge that dies takes the family's scanning with it, so a stray rejection
+  // is logged rather than fatal. Every request path is already wrapped; this is
+  // the last line of defence.
+  process.on('unhandledRejection', (reason) => {
+    log(`unhandled rejection: ${reason instanceof Error ? reason.message : reason}`);
   });
 }
 

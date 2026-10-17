@@ -140,6 +140,38 @@ the device cannot, you get the first page as an image and an `x-scanlet-format` 
 saying so. `GET /certificate.pem` serves the TLS certificate so a phone can install and
 trust it.
 
+The bridge also **advertises itself over Bonjour** (`_scanlet._tcp`) with its address,
+port, version and whether a pairing code is needed — never the code itself. A browser
+cannot browse mDNS, so this is not how the app finds it; it is how everything *else*
+can. From a clone:
+
+```sh
+node tools/find-bridge.mjs          # name, address, port, and whether a code is needed
+dns-sd -B _scanlet._tcp             # or with Apple's own tools
+```
+
+Run the bridge with `--name scanlet` and it is reachable at `scanlet.local` too, which
+an app served over plain http will guess automatically. Turn it off with
+`--no-advertise`.
+
+### Home Assistant
+
+There is an add-on, so the bridge can live on the machine that is already on all the
+time:
+
+**Settings → Add-ons → Add-on store → ⋮ → Repositories** →
+`https://github.com/Lettly/scanlet` → install **Scanlet Bridge**.
+
+You then get Scanlet **in the Home Assistant sidebar**, over Home Assistant's own
+https. That is the best mobile story in this repository: an https address is a secure
+origin, so the camera, the offline shell and *Add to Home Screen* all work, and because
+the panel and the API are the same origin there is nothing to configure — the add-on
+seeds the pairing code into the page for requests that came through ingress.
+
+It keeps the network listener on port 8787 for Shortcuts, Tasker, `curl` and the
+extension, and advertises itself on the network like any other bridge. See
+[`scanlet_bridge/README.md`](scanlet_bridge/README.md) for the options.
+
 ### Mobile: iPhone and Android
 
 **A browser on a phone still cannot reach a printer on its own** — no sockets, no mDNS,
@@ -208,15 +240,21 @@ touch Pages.
 ## Test it
 
 ```sh
-npm test    # bridge end-to-end + the extension's printer layer
+npm test    # bridge end-to-end + the extension + the Home Assistant add-on
 ```
 
-- `bridge/test/bridge.test.mjs` drives a private bridge, a paired LAN bridge and a
-  PDF-refusing device against a mock eSCL scanner, with the real client module — so
-  multipart parsing, token auth, static serving, path-traversal refusal, the
-  single-URL scan endpoints and the certificate route are all covered.
+- `bridge/test/bridge.test.mjs` drives a private bridge, a paired LAN bridge, a
+  PDF-refusing device and the Bonjour responder against a mock eSCL scanner, with the
+  real client module — so multipart parsing, token auth, static serving,
+  path-traversal refusal, the single-URL scan endpoints, the certificate route and the
+  advertisement are all covered.
 - `extension/test/escl.test.mjs` drives the extension's `fetch`-only modules against
   the same mock, covering capability parsing, scan-region arithmetic and ADF streaming.
+- `extension/test/messaging.test.mjs` puts a fake `chrome` in front of the real service
+  worker and drives its whole message protocol.
+- `scanlet_bridge/test/addon.test.mjs` runs the add-on entry point as a child process
+  and checks both of its listeners, including that Home Assistant's ingress header is
+  the only thing that gets the pairing code handed to it.
 
 Two things are exercised in a browser rather than in Node, because they need one:
 **⋮ → About Scanlet → Run diagnostics** covers the whole image and PDF pipeline *and*
@@ -225,8 +263,9 @@ resource that did not come from this origin), and `tests/share-post.html` submit
 Android share target's POST so the worker-stash-then-import path can be driven from a
 desktop.
 
-`node tools/vendor.mjs --check` re-hashes `vendor/` against its manifest; CI runs it on
-every push.
+`node tools/vendor.mjs --check` re-hashes `vendor/` against its manifest, and
+`node tools/build-extension.mjs --check` validates the extension package; CI runs both
+on every push.
 
 ## Keyboard shortcuts
 
@@ -270,10 +309,13 @@ extension/              the Chrome/Edge plugin (MV3)
 extension/test/         tests for its printer layer and message protocol
 docs/mobile.md          what works on iOS and Android, and what does not
 docs/self-contained.md  what is vendored, its size, and how to update it
+repository.yaml         the Home Assistant add-on repository manifest
+scanlet_bridge/         the Home Assistant add-on (config.yaml, Dockerfile, run.mjs)
 tests/share-post.html   manual harness for the share target
 vendor/                 the vendored libraries (see docs/self-contained.md)
-icons/, tools/          generated PNG icons, the icon generator, tools/vendor.mjs,
-                        tools/serve.mjs, tools/build-extension.mjs
+icons/, tools/          generated PNG icons, the icon generator, and the scripts:
+                        tools/vendor.mjs, tools/serve.mjs, tools/build-extension.mjs,
+                        tools/find-bridge.mjs
 ```
 
 A page is two things: the **untouched original blob** in IndexedDB, and a small **edit
