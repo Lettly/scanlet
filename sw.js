@@ -13,7 +13,7 @@
  *     implement share targets, so on iOS this never fires.
  */
 
-const VERSION = 'scanlet-v3';
+const VERSION = 'scanlet-v4';
 const SHELL = [
   './',
   './index.html',
@@ -29,6 +29,17 @@ const SHELL = [
   './assets/js/ocr.js',
   './assets/js/bridge.js',
   './assets/js/qr.js',
+  './assets/js/share.js',
+  // The small vendored libraries, so the app is complete offline from the first
+  // visit. The bulky ones — OCR cores, trained data, CMaps and substitute fonts —
+  // are cached by the runtime handler the first time a feature needs them.
+  './vendor/pdfjs/pdf.min.js',
+  './vendor/pdfjs/pdf.worker.min.js',
+  './vendor/pdf-lib/pdf-lib.min.js',
+  './vendor/jszip/jszip.min.js',
+  './vendor/qrcode-generator/qrcode.min.js',
+  './vendor/tesseract/tesseract.min.js',
+  './vendor/tesseract/worker.min.js',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/favicon-32.png',

@@ -16,8 +16,8 @@
 <meta name="format-detection" content="telephone=no" />
 <meta name="mobile-web-app-capable" content="yes" />
 <link rel="stylesheet" href="assets/app.css" />
-<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js" defer></script>
-<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js" defer></script>
+<script src="vendor/pdfjs/pdf.min.js" defer></script>
+<script src="vendor/pdf-lib/pdf-lib.min.js" defer></script>
 <script type="module" src="assets/js/main.js"></script>
 </head>
 <body>
@@ -670,8 +670,9 @@
         <li>OCR (Tesseract) with a searchable text layer in the exported PDF</li>
         <li>Multi-page assembly: reorder, split, merge, rotate, annotate, N-up, watermarks, bookmarks</li>
       </ul>
-      <p class="hint">Third-party libraries: PDF.js, pdf-lib, Tesseract.js, JSZip and qrcode-generator,
-      loaded from a CDN and cached for offline use by the service worker.</p>
+      <p class="hint">Self-contained: PDF.js, pdf-lib, Tesseract.js, JSZip and qrcode-generator are
+      vendored into this repository and loaded from it, so the app makes no third-party request at
+      runtime. The diagnostics below confirm it.</p>
       <p class="hint" id="about-versions"></p>
       <div class="btn-row">
         <button class="btn" id="btn-theme">Toggle theme</button>

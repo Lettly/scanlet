@@ -18,7 +18,7 @@ import * as shareLib from './share.js';
 import * as store from './store.js';
 import { CameraCapture, cameraSupported } from './capture.js';
 
-const JSZIP_CDN = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+const JSZIP = new URL('../../vendor/jszip/jszip.min.js', import.meta.url).toString();
 
 const ui = {};
 let camera = null;
@@ -1871,7 +1871,7 @@ async function loadZip() {
   if (window.JSZip) return window.JSZip;
   await new Promise((resolve, reject) => {
     const script = document.createElement('script');
-    script.src = JSZIP_CDN;
+    script.src = JSZIP;
     script.onload = resolve;
     script.onerror = () => reject(new Error('Could not load the archive library.'));
     document.head.append(script);
@@ -2389,6 +2389,85 @@ async function runSelfTest() {
     } else {
       record('pdf.js loaded', false, 'not loaded yet');
     }
+
+    // ── self-containment: everything from this origin, and nothing missing ──
+    let manifest = null;
+    try {
+      const response = await fetch(new URL('vendor/MANIFEST.json', document.baseURI));
+      manifest = response.ok ? await response.json() : null;
+    } catch {
+      manifest = null;
+    }
+    record(
+      'vendor manifest present',
+      Boolean(manifest),
+      manifest ? `${manifest.files.length} files, ${formatBytes(manifest.bytes)}` : 'missing — run tools/vendor.mjs',
+    );
+
+    if (manifest) {
+      const reachable = async (dest) => {
+        try {
+          const response = await fetch(new URL(`vendor/${dest}`, document.baseURI), {
+            method: 'HEAD',
+            cache: 'no-store',
+          });
+          return response.ok;
+        } catch {
+          return false;
+        }
+      };
+
+      const suspects = [];
+      await pool(manifest.files, 6, async (entry) => {
+        if (!(await reachable(entry.dest))) suspects.push(entry.dest);
+      });
+
+      // A busy or single-threaded static host can drop a connection when several
+      // are opened at once, so never call a file missing on one failed attempt.
+      const absent = [];
+      for (const dest of suspects) {
+        // eslint-disable-next-line no-await-in-loop
+        if (!(await reachable(dest))) absent.push(dest);
+      }
+
+      record(
+        `all ${manifest.files.length} vendored files are served`,
+        absent.length === 0,
+        absent.length ? `${absent.length} missing, e.g. ${absent.slice(0, 3).join(', ')}` : '',
+      );
+      record(
+        'OCR languages vendored',
+        (manifest.languages || []).includes('eng'),
+        (manifest.languages || []).join(', ') || 'none — OCR would use the CDN',
+      );
+    }
+
+    // Exercise the lazily loaded libraries so their requests count below.
+    try {
+      await qrLib.renderQr('scanlet', { size: 120 });
+      record('QR library loads', true);
+    } catch (error) {
+      record('QR library loads', false, error.message);
+    }
+    try {
+      await loadZip();
+      record('archive library loads', true);
+    } catch (error) {
+      record('archive library loads', false, error.message);
+    }
+
+    const external = performance
+      .getEntriesByType('resource')
+      .map((entry) => {
+        try {
+          return new URL(entry.name);
+        } catch {
+          return null;
+        }
+      })
+      .filter((url) => url && /^https?:$/.test(url.protocol) && url.origin !== location.origin);
+    const hosts = [...new Set(external.map((url) => url.host))];
+    record('no third-party requests', hosts.length === 0, hosts.join(', ') || 'all same-origin');
 
     record('IndexedDB reachable', typeof indexedDB !== 'undefined');
     record('offline cache registered', Boolean(navigator.serviceWorker?.controller));

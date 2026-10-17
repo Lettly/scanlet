@@ -6,7 +6,7 @@
  * user paste the link instead.
  */
 
-const CDN = 'https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js';
+const QR_LIB = new URL('../../vendor/qrcode-generator/qrcode.min.js', import.meta.url).toString();
 
 let loader = null;
 
@@ -15,7 +15,7 @@ async function loadQrLib() {
   if (!loader) {
     loader = new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      script.src = CDN;
+      script.src = QR_LIB;
       script.async = true;
       script.onload = () => resolve(window.qrcode);
       script.onerror = () => reject(new Error('Could not load the QR code library.'));

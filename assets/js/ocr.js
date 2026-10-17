@@ -1,6 +1,28 @@
-/* Scanlet — OCR, on top of Tesseract.js (loaded lazily from a CDN). */
+/* Scanlet — OCR, on top of Tesseract.js.
+ *
+ * The engine, its worker and its WASM core all come from `vendor/`, so OCR works
+ * with no network at all. The one bulky part is a language's trained data:
+ * `node tools/vendor.mjs --langs eng,ita` fetches more, and vendor/MANIFEST.json
+ * records which ones are on disk. A language that is not vendored falls back to
+ * the public CDN, so nothing breaks — it just needs the network once.
+ */
 
-const CDN = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+const VENDOR = new URL('../../vendor/', import.meta.url);
+const TESSERACT_JS = new URL('tesseract/tesseract.min.js', VENDOR).toString();
+const LOCAL = {
+  workerPath: new URL('tesseract/worker.min.js', VENDOR).toString(),
+  // The SIMD core is the one modern browsers use; the plain core sits alongside
+  // it only if `tools/vendor.mjs --with-fallback-core` was run.
+  corePath: new URL('tesseract/tesseract-core-simd.wasm.js', VENDOR).toString(),
+  langPath: new URL('tessdata/', VENDOR).toString(),
+  gzip: true,
+};
+const REMOTE = {
+  workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/worker.min.js',
+  corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5.1.1/tesseract-core-simd.wasm.js',
+  langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+  gzip: true,
+};
 
 export const OCR_LANGUAGES = [
   { code: 'eng', label: 'English' },
@@ -30,15 +52,36 @@ function loadScript(src) {
     script.src = src;
     script.async = true;
     script.onload = () => resolve();
-    script.onerror = () => reject(new Error('Could not load the OCR engine. Check your connection.'));
+    script.onerror = () => reject(new Error('Could not load the OCR engine.'));
     document.head.append(script);
   });
 }
 
 export async function loadOcr() {
   if (window.Tesseract) return window.Tesseract;
-  if (!loaderPromise) loaderPromise = loadScript(CDN).then(() => window.Tesseract);
+  if (!loaderPromise) loaderPromise = loadScript(TESSERACT_JS).then(() => window.Tesseract);
   return loaderPromise;
+}
+
+/** Languages actually present in vendor/, as recorded by tools/vendor.mjs. */
+let vendoredLanguages = null;
+async function localLanguages() {
+  if (vendoredLanguages) return vendoredLanguages;
+  try {
+    const response = await fetch(new URL('MANIFEST.json', VENDOR));
+    const manifest = response.ok ? await response.json() : null;
+    vendoredLanguages = new Set(Array.isArray(manifest?.languages) ? manifest.languages : []);
+  } catch {
+    vendoredLanguages = new Set();
+  }
+  return vendoredLanguages;
+}
+
+/** `eng+ita` is local only when every part of it is. */
+async function isLocalLanguage(lang) {
+  const available = await localLanguages();
+  if (!available.size) return false;
+  return lang.split('+').every((code) => available.has(code));
 }
 
 const workerCache = new Map(); // lang → { onProgress, worker }
@@ -53,12 +96,28 @@ async function getWorker(lang, onProgress) {
   const holder = entry || { onProgress, worker: null };
   holder.onProgress = onProgress;
   workerCache.set(lang, holder);
+
+  const paths = (await isLocalLanguage(lang)) ? LOCAL : REMOTE;
   try {
     holder.worker = await Tesseract.createWorker(lang, 1, {
+      ...paths,
       logger: (message) => workerCache.get(lang)?.onProgress?.(message),
     });
-  } catch (err) {
+  } catch (error) {
     workerCache.delete(lang);
+    if (paths === LOCAL) {
+      // Vendored engine but a language that is not on disk: try the CDN once.
+      try {
+        holder.worker = await Tesseract.createWorker(lang, 1, {
+          ...REMOTE,
+          logger: (message) => workerCache.get(lang)?.onProgress?.(message),
+        });
+        workerCache.set(lang, holder);
+        return holder.worker;
+      } catch {
+        throw new Error('Could not start the OCR engine for this language.');
+      }
+    }
     throw new Error('Could not start the OCR engine for this language.');
   }
   return holder.worker;

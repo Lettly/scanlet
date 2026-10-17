@@ -498,6 +498,13 @@ const MIME = {
   '.md': 'text/markdown; charset=utf-8',
   '.woff2': 'font/woff2',
   '.map': 'application/json; charset=utf-8',
+  // vendored library assets
+  '.gz': 'application/gzip',
+  '.ttf': 'font/ttf',
+  '.otf': 'font/otf',
+  '.pfb': 'application/octet-stream',
+  '.bcmap': 'application/octet-stream',
+  '.wasm': 'application/wasm',
 };
 
 /** Serve a file from `root`, refusing anything that escapes it. */

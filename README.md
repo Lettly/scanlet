@@ -205,9 +205,14 @@ npm test    # bridge end-to-end + the extension's printer layer
   the same mock, covering capability parsing, scan-region arithmetic and ADF streaming.
 
 Two things are exercised in a browser rather than in Node, because they need one:
-**⋮ → About Scanlet → Run diagnostics** covers the whole image and PDF pipeline, and
-`tests/share-post.html` submits the Android share target's POST so the
-worker-stash-then-import path can be driven from a desktop.
+**⋮ → About Scanlet → Run diagnostics** covers the whole image and PDF pipeline *and*
+verifies self-containment (it HEAD-checks all 194 vendored files and reports any
+resource that did not come from this origin), and `tests/share-post.html` submits the
+Android share target's POST so the worker-stash-then-import path can be driven from a
+desktop.
+
+`node tools/vendor.mjs --check` re-hashes `vendor/` against its manifest; CI runs it on
+every push.
 
 ## Keyboard shortcuts
 
@@ -249,8 +254,10 @@ bridge/test/            mock eSCL scanner + its end-to-end tests
 extension/              the Chrome/Edge plugin (MV3)
 extension/test/         tests for its printer layer
 docs/mobile.md          what works on iOS and Android, and what does not
+docs/self-contained.md  what is vendored, its size, and how to update it
 tests/share-post.html   manual harness for the share target
-icons/, tools/          generated PNG icons and the generator
+vendor/                 the vendored libraries (see docs/self-contained.md)
+icons/, tools/          generated PNG icons, the icon generator, tools/vendor.mjs
 ```
 
 A page is two things: the **untouched original blob** in IndexedDB, and a small **edit
@@ -264,23 +271,34 @@ Rendering a page runs:
 original → perspective warp → rotate/flip → downscale → enhancement → border trim
 ```
 
-Third-party libraries load from jsDelivr and are cached by the service worker on first
-use, so the repository stays small but the app still works offline after the first
-visit: [PDF.js](https://mozilla.github.io/pdf.js/) 3.11.174, 
-[pdf-lib](https://pdf-lib.js.org/) 1.17.1,
-[Tesseract.js](https://tesseract.projectnaptha.com/) 5.1.1,
-[JSZip](https://stuk.github.io/jszip/) 3.10.1, and
-[qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) 1.4.4.
+Third-party libraries are **vendored into `vendor/`** and loaded from there, so the app
+makes no third-party request at runtime — see
+[docs/self-contained.md](docs/self-contained.md) for what is included, the size, and how
+to update it:
 
-## Privacy
+| Library | Used for |
+|---|---|
+| [PDF.js](https://mozilla.github.io/pdf.js/) 3.11.174 | rendering imported PDFs (+ CMaps and substitute fonts) |
+| [pdf-lib](https://pdf-lib.js.org/) 1.17.1 | writing the exported PDF |
+| [Tesseract.js](https://tesseract.projectnaptha.com/) 5.1.1 | OCR (+ its WASM core and English trained data) |
+| [JSZip](https://stuk.github.io/jszip/) 3.10.1 | page and project bundles |
+| [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) 1.4.4 | pairing QR codes |
 
-There is no backend, no analytics, no telemetry, and no third-party request other than
-the CDN fetches for the libraries above. Documents, page images and recognised text
-live in your browser's storage until you delete them.
+## Privacy and self-containment
 
-The bridge and the extension are the only components that touch the network, and both
-talk only to printers you point them at. The bridge keeps its pairing code in the URL
-**fragment**, which is never sent to a server, logged, or leaked as a referrer.
+There is no backend, no analytics, no telemetry, and **no third-party request at
+runtime** — every library is vendored into `vendor/`, so the app runs with the network
+unplugged. Documents, page images and recognised text live in your browser's storage
+until you delete them.
+
+Run **⋮ → About Scanlet → Run diagnostics** and the last line confirms it from the
+browser's own resource timings: `no third-party requests — all same-origin`.
+
+The bridge and the extension are the only components that touch the network at all, and
+they talk only to printers you point them at. The bridge keeps its pairing code in the
+URL **fragment**, which is never sent to a server, logged, or leaked as a referrer.
+See [docs/self-contained.md](docs/self-contained.md) for what is vendored, how to
+update it, and how to make more OCR languages local.
 
 ## Limits worth knowing
 

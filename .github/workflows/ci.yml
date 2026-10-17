@@ -25,6 +25,9 @@ jobs:
       - name: Extension printer-layer tests
         run: node extension/test/escl.test.mjs
 
+      - name: vendor/ matches its manifest
+        run: node tools/vendor.mjs --check
+
       - name: Every module parses
         run: |
           for file in assets/js/*.js extension/src/*.js sw.js; do

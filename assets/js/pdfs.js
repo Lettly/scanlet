@@ -9,7 +9,16 @@ import { createCanvas, ctx2d, canvasToBlob, clamp, safeFilename } from './util.j
 
 export const PDFJS_VERSION = '3.11.174';
 export const PDFLIB_VERSION = '1.17.1';
-const PDFJS_WORKER = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VERSION}/build/pdf.worker.min.js`;
+
+/**
+ * Everything comes from `vendor/`, resolved relative to this module, so the app
+ * makes no third-party request at runtime — the worker, the CMaps and the
+ * substitute fonts included.
+ */
+const VENDOR = new URL('../../vendor/', import.meta.url);
+const PDFJS_WORKER = new URL('pdfjs/pdf.worker.min.js', VENDOR).toString();
+const CMAP_URL = new URL('pdfjs/cmaps/', VENDOR).toString();
+const STANDARD_FONTS_URL = new URL('pdfjs/standard_fonts/', VENDOR).toString();
 
 let workerConfigured = false;
 function pdfjs() {
@@ -35,7 +44,13 @@ export const pdfEnginesReady = () => Boolean(window.pdfjsLib && window.PDFLib);
 export async function importPdfFile(file, { onProgress, targetMaxEdge = 2400 } = {}) {
   const lib = pdfjs();
   const data = new Uint8Array(await file.arrayBuffer());
-  const pdf = await lib.getDocument({ data, isEvalSupported: false }).promise;
+  const pdf = await lib.getDocument({
+    data,
+    isEvalSupported: false,
+    cMapUrl: CMAP_URL,
+    cMapPacked: true,
+    standardFontDataUrl: STANDARD_FONTS_URL,
+  }).promise;
   const out = [];
   try {
     for (let number = 1; number <= pdf.numPages; number++) {
