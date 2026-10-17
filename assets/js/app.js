@@ -26,6 +26,9 @@ let lastClickedPage = null;
 let undoStack = [];
 const cameras = { shots: [], devices: [] };
 
+/** The width below which the CSS turns the inspector into a bottom sheet. */
+const NARROW = window.matchMedia('(max-width: 980px)');
+
 /* ─────────────────────────────── boot ─────────────────────────────── */
 
 export function mount() {
@@ -267,6 +270,16 @@ function renderInspector() {
     ? `${count} page${count === 1 ? '' : 's'} selected`
     : 'No pages selected';
 
+  /*
+   * Below 980px the CSS lays the inspector out as a bottom sheet, off-screen
+   * until it is given `.open`. Nothing used to add that class, which left every
+   * page action — rotate, filters, deskew, crop, OCR, delete — unreachable on a
+   * phone. It rises when a page is selected, and the × lowers it again by
+   * clearing the selection.
+   */
+  const sheet = NARROW.matches && count > 0 && !ui.inspector.hidden && !ui.rail.classList.contains('open');
+  ui.inspector.classList.toggle('open', sheet);
+
   const first = selection[0];
   if (first) {
     setSeg(ui.filterSeg, first.filter || 'original');
@@ -355,6 +368,13 @@ function bindGlobal() {
   });
 
   window.addEventListener('keydown', onKeyDown);
+
+  // Rotating a phone, or merely resizing a window, changes whether the inspector
+  // is a side column or a sheet, so re-decide when that happens.
+  const onWidthChange = () => renderInspector();
+  if (typeof NARROW.addEventListener === 'function') NARROW.addEventListener('change', onWidthChange);
+  else if (typeof NARROW.addListener === 'function') NARROW.addListener(onWidthChange);
+
   window.addEventListener('beforeunload', (event) => {
     if (store.state.busy) {
       event.preventDefault();
@@ -1984,7 +2004,11 @@ function bindAppBar() {
   $('#act-scanner').addEventListener('click', openScanner);
   $('#act-export').addEventListener('click', openExport);
   $('#btn-new-doc').addEventListener('click', newDocument);
-  $('#btn-menu').addEventListener('click', () => ui.rail.classList.toggle('open'));
+  $('#btn-menu').addEventListener('click', () => {
+    const open = ui.rail.classList.toggle('open');
+    // One panel at a time: the rail would sit on top of the actions sheet.
+    if (open) ui.inspector.classList.remove('open');
+  });
 
   ui.docTitle.addEventListener('change', async () => {
     const doc = store.activeDoc();

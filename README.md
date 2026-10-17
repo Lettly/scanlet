@@ -185,9 +185,14 @@ npm test                                     # both test suites
 It is a static site — no build step, no bundler, no `node_modules`.
 
 ```sh
-python3 -m http.server 8899
-# then open http://127.0.0.1:8899
+node tools/serve.mjs          # http://127.0.0.1:8899
 ```
+
+Use that rather than `python3 -m http.server`: it sends the headers production would,
+so the shell and the service worker are never cached and everything else is revalidated
+with an ETag. A bare static server sends no cache headers at all, which means your
+browser caches your own JavaScript by heuristic and a reload quietly serves the previous
+build — hiding exactly the staleness bugs this app has been bitten by.
 
 Opening `index.html` directly works for import and export, but the camera and the
 bridge both need a real origin, so serve it over HTTP.
@@ -257,16 +262,18 @@ assets/js/
   bridge.js             clients for the bridge and the browser extension
   qr.js                 QR codes, for handing a session to another device
   share.js              the app side of the Android share target
-sw.js                   offline shell, plus the POST endpoint a share target needs
+sw.js                   offline shell and the share endpoint; revalidates app code,
+                        caches pinned libraries hard
 bridge/                 the scanning bridge (Node, no dependencies)
 bridge/test/            mock eSCL scanner + its end-to-end tests
 extension/              the Chrome/Edge plugin (MV3)
-extension/test/         tests for its printer layer
+extension/test/         tests for its printer layer and message protocol
 docs/mobile.md          what works on iOS and Android, and what does not
 docs/self-contained.md  what is vendored, its size, and how to update it
 tests/share-post.html   manual harness for the share target
 vendor/                 the vendored libraries (see docs/self-contained.md)
-icons/, tools/          generated PNG icons, the icon generator, tools/vendor.mjs
+icons/, tools/          generated PNG icons, the icon generator, tools/vendor.mjs,
+                        tools/serve.mjs, tools/build-extension.mjs
 ```
 
 A page is two things: the **untouched original blob** in IndexedDB, and a small **edit

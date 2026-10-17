@@ -1,19 +1,25 @@
 /* Scanlet — service worker.
  *
- * Two jobs:
+ * Three jobs:
  *
- *  1. Offline. The app shell is cached on install; CDN libraries (PDF.js,
- *     pdf-lib, Tesseract.js, JSZip, qrcode-generator) are cached as they are
- *     first used, so the app keeps working offline once it has been opened.
+ *  1. Offline. The app shell is cached on install, and the vendored libraries are
+ *     cached as they are first used, so the app keeps working offline.
  *
- *  2. Receiving a share. On Android, Scanlet can be a share target: picking
+ *  2. Staying current. This is the part that is easy to get wrong: app code
+ *     changes, and a cache-first service worker would serve yesterday's
+ *     `app.js` forever — because the worker only reinstalls when *its own* file
+ *     changes. So mutable files are fetched with revalidation and only fall back
+ *     to the cache when the network is gone, while `vendor/` is cache-first
+ *     because those files are pinned to a version and cannot change.
+ *
+ *  3. Receiving a share. On Android, Scanlet can be a share target: picking
  *     "Scanlet" in any app's share sheet POSTs the files here. A service worker
  *     is the only way a web app can receive a POST, so we stash the payload in
  *     the Cache API and redirect to the app, which picks it up. Safari does not
  *     implement share targets, so on iOS this never fires.
  */
 
-const VERSION = 'scanlet-v4';
+const VERSION = 'scanlet-v5';
 const SHELL = [
   './',
   './index.html',
@@ -50,6 +56,12 @@ const SHELL = [
 const SHARE_CACHE = 'scanlet-share';
 const SHARE_ROUTE = 'share';
 
+/** Pinned library versions: their contents never change, so cache them hard. */
+const IMMUTABLE = /^\/vendor\//;
+
+/** The bridge's own API, when the bridge is the thing serving this app. */
+const BRIDGE_API = /^\/(health|printers|probe|scan\.)/;
+
 self.addEventListener('install', (event) => {
   event.waitUntil(
     (async () => {
@@ -84,6 +96,48 @@ self.addEventListener('activate', (event) => {
       .then(() => self.clients.claim()),
   );
 });
+
+/* ─────────────────────────── caching ─────────────────────────── */
+
+async function store(request, response) {
+  if (!response.ok) return;
+  const copy = response.clone();
+  caches.open(VERSION).then((cache) => cache.put(request, copy)).catch(() => {});
+}
+
+async function cacheFirst(request) {
+  const cached = await caches.match(request);
+  if (cached) return cached;
+  const response = await fetch(request);
+  store(request, response);
+  return response;
+}
+
+/**
+ * Revalidate rather than trust the cache, and fall back to the cache only when
+ * the network is unavailable. For a web app whose code changes, the alternative
+ * is a user stuck on an old build with no way to tell.
+ */
+async function networkFirst(request) {
+  try {
+    const response = await fetch(request, { cache: 'no-cache' });
+    store(request, response);
+    return response;
+  } catch (error) {
+    const cached = await caches.match(request);
+    if (cached) return cached;
+    if (request.mode === 'navigate') {
+      const shell = await caches.match('./index.html');
+      if (shell) return shell;
+    }
+    return new Response('Offline, and this file is not cached yet.', {
+      status: 504,
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+    });
+  }
+}
+
+/* ─────────────────────────── sharing ─────────────────────────── */
 
 /** An absolute URL inside our scope — `new Request('./x')` has no base to resolve against. */
 const inScope = (path) => new URL(path, self.registration.scope).toString();
@@ -129,51 +183,26 @@ async function receiveShare(request) {
   return Response.redirect(inScope(`./index.html?shared=${id}`), 303);
 }
 
+/* ─────────────────────────── fetch ─────────────────────────── */
+
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Only same-origin requests can be a share target.
-  if (url.origin === self.location.origin) {
-    if (
-      (request.method === 'POST' || request.method === 'GET') &&
-      url.pathname === new URL(inScope(`./${SHARE_ROUTE}`)).pathname
-    ) {
-      event.respondWith(receiveShare(request));
-      return;
-    }
-  }
+  // Only same-origin traffic is ours. A bridge on another port or another
+  // machine must never be intercepted, let alone cached.
+  if (url.origin !== self.location.origin) return;
 
-  if (request.method !== 'GET') return;
-
-  // Never cache the local scanning bridge.
-  if (url.hostname === '127.0.0.1' || url.hostname === 'localhost') return;
-
-  if (request.mode === 'navigate') {
-    event.respondWith(
-      fetch(request)
-        .then((response) => {
-          const copy = response.clone();
-          caches.open(VERSION).then((cache) => cache.put('./index.html', copy)).catch(() => {});
-          return response;
-        })
-        .catch(() => caches.match('./index.html')),
-    );
+  if (
+    (request.method === 'POST' || request.method === 'GET') &&
+    url.pathname === new URL(inScope(`./${SHARE_ROUTE}`)).pathname
+  ) {
+    event.respondWith(receiveShare(request));
     return;
   }
 
-  event.respondWith(
-    caches.match(request).then((cached) => {
-      if (cached) return cached;
-      return fetch(request)
-        .then((response) => {
-          if (response.ok || response.type === 'opaque') {
-            const copy = response.clone();
-            caches.open(VERSION).then((cache) => cache.put(request, copy)).catch(() => {});
-          }
-          return response;
-        })
-        .catch(() => cached);
-    }),
-  );
+  if (request.method !== 'GET') return;
+  if (BRIDGE_API.test(url.pathname)) return;
+
+  event.respondWith(IMMUTABLE.test(url.pathname) ? cacheFirst(request) : networkFirst(request));
 });

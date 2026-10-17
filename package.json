@@ -21,7 +21,7 @@
     "check:extension": "node tools/build-extension.mjs --check",
     "vendor": "node tools/vendor.mjs",
     "check:vendor": "node tools/vendor.mjs --check",
-    "serve": "python3 -m http.server 8899",
+    "serve": "node tools/serve.mjs",
     "bridge": "node bridge/scanlet-bridge.mjs",
     "bridge:lan": "node bridge/scanlet-bridge.mjs --lan",
     "bridge:tls": "node bridge/scanlet-bridge.mjs --lan --tls",
