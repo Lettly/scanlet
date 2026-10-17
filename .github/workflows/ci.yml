@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Bridge end-to-end tests (mock eSCL scanner)
+        run: node bridge/test/bridge.test.mjs
+
+      - name: Every module parses
+        run: |
+          for file in assets/js/*.js sw.js; do
+            node --check "$file" || exit 1
+          done
+        shell: bash

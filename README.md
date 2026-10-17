@@ -126,9 +126,10 @@ need a real origin, so serve it over HTTP.
 ## Deploy it
 
 Any static host will do. For GitHub Pages: push this repository, then in
-**Settings → Pages** choose **Deploy from a branch → main → / (root)**. The included
-workflow (`.github/workflows/pages.yml`) does the same thing if you prefer Pages to
-build from Actions.
+**Settings → Pages** choose **Deploy from a branch → main → / (root)** — that is
+exactly how the [live demo](https://lettly.github.io/scanlet/) is published. The
+included `.github/workflows/ci.yml` runs the test suite on every push; it does not
+need to touch Pages.
 
 Everything is relative-pathed, so it works at `https://user.github.io/scanlet/`
 without configuration. No `.nojekyll` processing issues — the repo ships one anyway.
