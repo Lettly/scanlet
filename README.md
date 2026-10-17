@@ -174,9 +174,9 @@ to the bridge behind the ingress path it was served from.
 It also listens on port 8787 across your network, for Shortcuts, Tasker, `curl` and the
 extension. To scan from a phone without the sidebar, open Scanlet at that address —
 `http://homeassistant.local:8787/` on a stock Home Assistant, or whatever the host is
-called — and it connects with no setup. Scanlet's own search finds the add-on there from
-any http page on the network; from an https page it cannot, because the browser blocks
-plain-http requests to a LAN address. See
+called — and it connects with no setup. Scanlet's own search finds the add-on from
+any page on the network, a published https app included: the browser first asks to
+reach your local network (Chrome's *Local network access* prompt) — allow it. See
 [`scanlet_bridge/README.md`](scanlet_bridge/README.md) for the options.
 
 ### Mobile: iPhone and Android

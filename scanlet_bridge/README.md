@@ -42,9 +42,10 @@ printers, so the network is the boundary — do not expose port 8787 to the inte
 A phone that is not in the sidebar opens Scanlet at the add-on's own address,
 `http://homeassistant.local:8787/` (or whatever your Home Assistant host is called), and
 it connects with no setup. Scanlet's network search also sweeps the LAN and tries the
-usual `.local` names, including `homeassistant.local` — but only from an http page, since
-a browser will not let an https page reach a plain-http bridge. The sidebar panel needs
-neither: it talks to the bridge behind Home Assistant's ingress path.
+usual `.local` names, including `homeassistant.local` — from an https page too: the
+browser asks permission to reach your local network first (Chrome's *Local network
+access* prompt), and once allowed the bridge answers. The sidebar panel needs neither:
+it talks to the bridge behind Home Assistant's ingress path.
 
 ### Scanning without opening Scanlet
 

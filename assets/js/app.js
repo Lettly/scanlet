@@ -1418,9 +1418,13 @@ async function refreshBridge() {
   if (!best) {
     scannerState.bridge = null;
     scannerState.client = null;
+    // An https page can only reach a local bridge if the browser lets it ask
+    // for local network access — say so, rather than only offering an address.
     setBridgeStatus(
       'bad',
-      'No bridge answered. Start one, or paste its address — it is one Node command.',
+      location.protocol === 'https:'
+        ? 'No bridge answered. If one is on your network, allow “Local network access” when your browser asks, or open Scanlet from the bridge itself.'
+        : 'No bridge answered. Start one, or paste its address — it is one Node command.',
     );
     ui.scanner.shareToggle.hidden = true;
     ui.scanner.share.hidden = true;

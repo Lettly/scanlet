@@ -112,6 +112,54 @@ await check('detectBridges sweeps the whole /24 and finds a bridge on the networ
   }
 });
 
+await check('detectBridges tries the .local names from an https page too', async () => {
+  const realLocation = globalThis.location;
+  const realFetch = globalThis.fetch;
+  const tried = [];
+  try {
+    globalThis.location = {
+      protocol: 'https:',
+      hostname: 'lettly.github.io',
+      href: 'https://lettly.github.io/scanlet/',
+      origin: 'https://lettly.github.io',
+    };
+    globalThis.fetch = async (url) => {
+      const href = String(url);
+      tried.push(href);
+      if (href === 'http://homeassistant.local:8787/health') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            version: '9.9.9',
+            lan: true,
+            app: true,
+            addresses: ['192.168.1.50'],
+            port: 8787,
+            printers: [],
+          }),
+        };
+      }
+      throw new Error('blocked');
+    };
+
+    const found = await detectBridges({ concurrency: 8 });
+    assert.equal(found.length, 1, 'the bridge should be found from the https page');
+    assert.equal(found[0].url, 'http://homeassistant.local:8787/');
+    assert.ok(
+      tried.includes('http://homeassistant.local:8787/health'),
+      'an https page should still try the bridge’s .local name (Chrome exempts it from mixed content)',
+    );
+    assert.ok(
+      !tried.some((url) => url.startsWith('http://lettly.github.io')),
+      'a public hostname is not guessed over https — it would only be mixed content',
+    );
+  } finally {
+    globalThis.location = realLocation;
+    globalThis.fetch = realFetch;
+  }
+});
+
 await check('DEFAULT_BRIDGE is the loopback helper', () => {
   assert.equal(DEFAULT_BRIDGE, 'http://127.0.0.1:8787');
 });

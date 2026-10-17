@@ -283,22 +283,25 @@ export async function detectBridges({
   add(DEFAULT_BRIDGE);
 
   /*
-   * Network guesses, only over http: from an https page the browser blocks
-   * plain-http requests to a LAN address as mixed content, so these could never
-   * succeed there. A bridge that serves https, or one reached same-origin
-   * through Home Assistant's ingress, is covered by the candidates above.
+   * A bridge sits on the local network, so these are plain-http addresses on a
+   * `.local` name or a private IP. An https page would normally have those
+   * blocked as mixed content, but Chrome's Local Network Access exempts exactly
+   * those destinations: it asks the user for permission and, once granted, the
+   * request goes through. (It is the `.local` name or the private-IP literal
+   * that earns the exemption — a public hostname would not, so we do not guess
+   * one over https.) Other browsers block it outright, where the probe simply
+   * fails and is caught. So we try them whatever this page's scheme is.
    */
   const named = new Set();
-  if (typeof location !== 'undefined' && location.protocol === 'http:') {
-    for (const name of bridgeHostNames(location.hostname)) {
-      if (!name || name === 'localhost' || isPrivateIpv4(name)) continue;
-      named.add(normaliseBridgeBase(`http://${name}:${BRIDGE_PORT}`));
-    }
-    for (const url of named) add(url);
-    if (sweep && isPrivateIpv4(location.hostname)) {
-      const prefix = location.hostname.split('.').slice(0, 3).join('.');
-      for (let i = 1; i <= 254; i++) add(`http://${prefix}.${i}:${BRIDGE_PORT}`);
-    }
+  for (const name of bridgeHostNames(location.hostname)) {
+    if (!name || name === 'localhost' || isPrivateIpv4(name)) continue;
+    if (location.protocol !== 'http:' && !/\.local$/i.test(name)) continue;
+    named.add(normaliseBridgeBase(`http://${name}:${BRIDGE_PORT}`));
+  }
+  for (const url of named) add(url);
+  if (sweep && isPrivateIpv4(location.hostname)) {
+    const prefix = location.hostname.split('.').slice(0, 3).join('.');
+    for (let i = 1; i <= 254; i++) add(`http://${prefix}.${i}:${BRIDGE_PORT}`);
   }
 
   const found = [];
