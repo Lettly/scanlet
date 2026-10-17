@@ -42,10 +42,16 @@ permission requires.
 ## Flags
 
 ```
+--lan          listen on the network and serve Scanlet to other devices
+--tls          serve over https with a generated self-signed certificate
 --port <n>     default 8787
 --host <ip>    default 127.0.0.1
+--name <label> the Bonjour name to advertise (and answer to, as <label>.local)
 --quiet        log nothing
 ```
+
+With `--lan` there is no pairing code: anyone who can reach the bridge can scan, so
+the network itself is the boundary. Keep port 8787 off the public internet.
 
 ## Development
 

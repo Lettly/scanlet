@@ -53,10 +53,9 @@ async function main() {
   const ingressPort = await freePort();
   const lanPort = await freePort();
 
-  // A configured code, so the test can assert the exact string end up in the
-  // seeded page rather than reading it back out of the log.
-  const token = 'addon-test-code';
-  fs.writeFileSync(optionsPath, JSON.stringify({ token, printers: [], advertise: false }));
+  // Advertising is off, and the options file carries no secret: there is no
+  // pairing code any more — the network is the boundary.
+  fs.writeFileSync(optionsPath, JSON.stringify({ printers: [], advertise: false }));
 
   const child = spawn(process.execPath, [ENTRY], {
     env: {
@@ -108,25 +107,19 @@ async function main() {
       assert.match(output.join(''), new RegExp(`panel on port ${ingressPort}`));
     });
 
-    await check('the network listener needs the pairing code', async () => {
+    await check('the network listener is open, with no pairing code', async () => {
       const health = await fetch(`${lan}/health`).then((response) => response.json());
       assert.equal(health.ok, true);
-      assert.equal(health.requiresToken, true);
-      assert.equal(health.paired, false, 'an unpaired probe should be told so');
+      assert.equal(health.requiresToken, undefined, 'there is no code to require');
+      assert.equal(health.lan, true);
 
-      const refused = await fetch(`${lan}/printers`);
-      assert.equal(refused.status, 401);
-      await refused.json();
-    });
-
-    await check('the network listener accepts the code', async () => {
-      const response = await fetch(`${lan}/printers`, { headers: { 'x-scanlet-token': token } });
-      assert.equal(response.status, 200);
-      const body = await response.json();
+      const printers = await fetch(`${lan}/printers`);
+      assert.equal(printers.status, 200);
+      const body = await printers.json();
       assert.ok(Array.isArray(body.printers));
     });
 
-    await check('an ingress request is served the app with the code seeded', async () => {
+    await check('an ingress request is served the app, with no code to seed', async () => {
       const response = await fetch(`${ingress}${INGRESS_PATH}/`, {
         headers: { 'x-ingress-path': INGRESS_PATH },
       });
@@ -134,8 +127,7 @@ async function main() {
       assert.match(response.headers.get('content-type'), /text\/html/);
       const html = await response.text();
       assert.match(html, /Scanlet/, 'it should be the app shell');
-      assert.ok(html.includes('addon-test-code'), 'the pairing code should be seeded so the panel just works');
-      assert.ok(html.includes('scanlet:bridge'), 'seeded under the key the app reads');
+      assert.ok(!html.includes('scanlet:bridge'), 'nothing is seeded — the app discovers the bridge itself');
     });
 
     await check('the same request with the prefix already stripped also works', async () => {
@@ -144,27 +136,10 @@ async function main() {
       assert.match(await response.text(), /Scanlet/);
     });
 
-    await check('a request without the ingress header is not handed the code', async () => {
+    await check('a request without the ingress header is served just the same', async () => {
       const response = await fetch(`${ingress}/`);
       assert.equal(response.status, 200);
-      const html = await response.text();
-      assert.match(html, /Scanlet/);
-      assert.ok(!html.includes('addon-test-code'), 'someone on the LAN must not get the code for free');
-    });
-
-    await check('the seeded code is the app’s bridge record, already paired', async () => {
-      // What the app does with what it was handed: read the record, then use it.
-      const html = await fetch(`${ingress}${INGRESS_PATH}/`, {
-        headers: { 'x-ingress-path': INGRESS_PATH },
-      }).then((response) => response.text());
-      const match = /\{url:location\.origin,token:"([^"]+)"\}/.exec(html);
-      assert.ok(match, 'the seed should carry a token');
-      assert.equal(match[1], token);
-
-      const health = await fetch(`${ingress}/health`, {
-        headers: { 'x-ingress-path': INGRESS_PATH, 'x-scanlet-token': match[1] },
-      }).then((response) => response.json());
-      assert.equal(health.paired, true, 'that code should be accepted');
+      assert.match(await response.text(), /Scanlet/);
     });
 
     await check('the app’s own files are served through ingress', async () => {
@@ -176,18 +151,19 @@ async function main() {
       await response.text();
     });
 
-    await check('a scan URL works with the code in the query, for a Shortcut', async () => {
+    await check('a scan URL with no printer names one, for a Shortcut', async () => {
       // No printer named, and none configured: this must be a clean error, not a
       // crash. It used to take the whole add-on down — the route returned a
       // promise that escaped its own try/catch.
-      const withoutCode = await fetch(`${lan}/scan.pdf`);
-      assert.equal(withoutCode.status, 401);
-      await withoutCode.json();
+      const unnamed = await fetch(`${lan}/scan.pdf`);
+      assert.equal(unnamed.status, 502);
+      const body = await unnamed.json();
+      assert.match(body.error, /Name the printer/);
 
-      const named = await fetch(`${lan}/scan.pdf?printer=127.0.0.1:1&token=${token}`);
-      assert.equal(named.status, 502, 'an unreachable printer is a bad gateway, not a dead server');
-      const body = await named.json();
-      assert.match(body.error, /No eSCL scanner answered/);
+      const unreachable = await fetch(`${lan}/scan.pdf?printer=127.0.0.1:1`);
+      assert.equal(unreachable.status, 502, 'an unreachable printer is a bad gateway, not a dead server');
+      const detail = await unreachable.json();
+      assert.match(detail.error, /No eSCL scanner answered/);
     });
 
     await check('the add-on is still serving after that failure', async () => {

@@ -110,22 +110,25 @@ SDKs.
 
 In the default mode it is a private helper on the loopback interface. With `--lan` it
 becomes a small scan server that **also serves the Scanlet app**, so any device on
-your network can open it and scan. Access is gated by a pairing code, which the bridge
-prints inside the link:
+your network can open it and scan. There is no pairing step and no password: anyone
+who can reach the bridge can use your printers, so the network — not a code — is the
+boundary. Keep it off the public internet.
 
 ```
-Open Scanlet on this machine:  http://127.0.0.1:8787/#s=TKrnnFUsQM-u
-Open Scanlet on your phone:    http://192.168.1.50:8787/#s=TKrnnFUsQM-u
+Open Scanlet on this machine:  http://127.0.0.1:8787/
+Open Scanlet on your phone:    http://192.168.1.50:8787/
 ```
 
-Scanlet reads that `#s=` code on load, pairs itself, strips it from the address bar and
-shows a QR code so the next device can join with one scan.
+Scanlet discovers the bridge on its own — at the address serving the page, at the
+loopback address, at the usual `.local` names (`scanlet.local`, `homeassistant.local`)
+and by sweeping the `/24` the page is on — so a phone needs no address typed and no
+link scanned. When it does serve the app it also shows a QR code of its address, for
+handing the session to another device.
 
 | Flag | Meaning |
 |---|---|
-| `--lan` | listen on the network and serve the app, with a pairing code |
+| `--lan` | listen on the network and serve the app |
 | `--tls` | serve over https with a generated self-signed certificate |
-| `--token <code>` | use a fixed pairing code instead of a random one |
 | `--port`, `--host`, `--quiet` | as you would expect |
 | `--app <dir>`, `--no-serve` | where the app lives, or do not serve it at all |
 
@@ -133,7 +136,7 @@ Beyond the app's own API, one URL scans on demand — for Shortcuts, Tasker, `cu
 cron job:
 
 ```sh
-curl -o scan.pdf 'http://192.168.1.50:8787/scan.pdf?printer=192.168.1.42&token=CODE'
+curl -o scan.pdf 'http://192.168.1.50:8787/scan.pdf?printer=192.168.1.42'
 ```
 
 It asks the *device* for a PDF, so a multi-page ADF job comes back as one document; if
@@ -142,12 +145,11 @@ saying so. `GET /certificate.pem` serves the TLS certificate so a phone can inst
 trust it.
 
 The bridge also **advertises itself over Bonjour** (`_scanlet._tcp`) with its address,
-port, version and whether a pairing code is needed — never the code itself. A browser
-cannot browse mDNS, so this is not how the app finds it; it is how everything *else*
-can. From a clone:
+port and version, and nothing secret. A browser cannot browse mDNS, so this is not how
+the app finds it; it is how everything *else* can. From a clone:
 
 ```sh
-node tools/find-bridge.mjs          # name, address, port, and whether a code is needed
+node tools/find-bridge.mjs          # name, address and port
 dns-sd -B _scanlet._tcp             # or with Apple's own tools
 ```
 
@@ -166,11 +168,15 @@ time:
 You then get Scanlet **in the Home Assistant sidebar**, over Home Assistant's own
 https. That is the best mobile story in this repository: an https address is a secure
 origin, so the camera, the offline shell and *Add to Home Screen* all work, and because
-the panel and the API are the same origin there is nothing to configure — the add-on
-seeds the pairing code into the page for requests that came through ingress.
+the panel and the API are the same origin there is nothing to configure — the app talks
+to the bridge behind the ingress path it was served from.
 
-It keeps the network listener on port 8787 for Shortcuts, Tasker, `curl` and the
-extension, and advertises itself on the network like any other bridge. See
+It also listens on port 8787 across your network, for Shortcuts, Tasker, `curl` and the
+extension. To scan from a phone without the sidebar, open Scanlet at that address —
+`http://homeassistant.local:8787/` on a stock Home Assistant, or whatever the host is
+called — and it connects with no setup. Scanlet's own search finds the add-on there from
+any http page on the network; from an https page it cannot, because the browser blocks
+plain-http requests to a LAN address. See
 [`scanlet_bridge/README.md`](scanlet_bridge/README.md) for the options.
 
 ### Mobile: iPhone and Android
@@ -192,7 +198,7 @@ integration:
 - **Android** can receive shared files: pick **Scanlet** in any app's share sheet. The
   service worker takes the POST, stashes it, and the app imports it.
 - **iOS** has no share targets, so the bridge answers a single URL —
-  `/scan.pdf?printer=192.168.1.42&token=…` — which a Shortcut can fetch and save to
+  `/scan.pdf?printer=192.168.1.42` — which a Shortcut can fetch and save to
   Files, straight from a printer, with no app open.
 - **`--tls` is what makes the address a secure origin**: camera, offline shell and
   **Add to Home Screen** all need it. Plain `--lan` still scans.
@@ -246,19 +252,20 @@ npm test    # the frontend helpers + the bridge + the extension + the Home Assis
 
 - `assets/test/util.test.mjs` and `assets/test/bridge.test.mjs` cover the frontend's
   browser-independent logic in Node: filename safety, the concurrency pool, bridge
-  address and pairing-code parsing, and the multipart body a multi-page scan returns.
-- `bridge/test/bridge.test.mjs` drives a private bridge, a paired LAN bridge, a
-  PDF-refusing device and the Bonjour responder against a mock eSCL scanner, with the
-  real client module — so multipart parsing, token auth, static serving,
-  path-traversal refusal, the single-URL scan endpoints, the certificate route and the
-  advertisement are all covered.
+  address and base-path parsing, the LAN discovery candidates, and the multipart body a
+  multi-page scan returns.
+- `bridge/test/bridge.test.mjs` drives a private bridge, a LAN bridge that serves the
+  app, a PDF-refusing device and the Bonjour responder against a mock eSCL scanner, with
+  the real client module — so multipart parsing, static serving, path-traversal refusal,
+  the single-URL scan endpoints, the certificate route and the advertisement are all
+  covered.
 - `extension/test/escl.test.mjs` drives the extension's `fetch`-only modules against
   the same mock, covering capability parsing, scan-region arithmetic and ADF streaming.
 - `extension/test/messaging.test.mjs` puts a fake `chrome` in front of the real service
   worker and drives its whole message protocol.
 - `scanlet_bridge/test/addon.test.mjs` runs the add-on entry point as a child process
-  and checks both of its listeners, including that Home Assistant's ingress header is
-  the only thing that gets the pairing code handed to it.
+  and checks both of its listeners, including that the ingress path is handled with no
+  code to seed and the network listener is open.
 
 Two things are exercised in a browser rather than in Node, because they need one:
 **⋮ → About Scanlet → Run diagnostics** covers the whole image and PDF pipeline *and*
@@ -346,7 +353,7 @@ to update it:
 | [pdf-lib](https://pdf-lib.js.org/) 1.17.1 | writing the exported PDF |
 | [Tesseract.js](https://tesseract.projectnaptha.com/) 5.1.1 | OCR (+ its WASM core and English trained data) |
 | [JSZip](https://stuk.github.io/jszip/) 3.10.1 | page and project bundles |
-| [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) 1.4.4 | pairing QR codes |
+| [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) 1.4.4 | the “use Scanlet on another device” QR code |
 
 ## Privacy and self-containment
 
@@ -359,8 +366,8 @@ Run **⋮ → About Scanlet → Run diagnostics** and the last line confirms it 
 browser's own resource timings: `no third-party requests — all same-origin`.
 
 The bridge and the extension are the only components that touch the network at all, and
-they talk only to printers you point them at. The bridge keeps its pairing code in the
-URL **fragment**, which is never sent to a server, logged, or leaked as a referrer.
+they talk only to printers you point them at. The bridge has no pairing code and no
+password: reaching it means being on your network, and that network is the boundary.
 See [docs/self-contained.md](docs/self-contained.md) for what is vendored, how to
 update it, and how to make more OCR languages local.
 
@@ -375,9 +382,8 @@ update it, and how to make more OCR languages local.
   neither. On iOS, the equivalent is a Shortcut against `/scan.pdf`.
 - **No native iOS or Android app ships here.** The recipe, and the single interface a
   native shell has to implement, is in [docs/mobile.md](docs/mobile.md).
-- **Anyone with the pairing link can use your printers.** Treat it like a password;
-  it is printed rather than emailed for that reason. Do not expose the bridge to the
-  internet.
+- **Anyone who can reach the bridge can use your printers.** There is no pairing code;
+  the network is the only security, so do not expose the bridge to the internet.
 - **The extension is Chrome/Edge only**, and finds printers by sweeping the prefixes
   you give it rather than by mDNS.
 - **Duplex and ADF come from the device**, through eSCL. Devices that support only

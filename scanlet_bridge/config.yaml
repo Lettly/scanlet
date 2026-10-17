@@ -1,5 +1,5 @@
 name: Scanlet Bridge
-version: "1.0.0"
+version: "1.1.0"
 slug: scanlet_bridge
 description: Run the Scanlet scanning bridge on your network, and scan from a printer
 url: https://github.com/Lettly/scanlet/tree/main/scanlet_bridge
@@ -19,12 +19,9 @@ ingress_port: 8099
 panel_icon: mdi:scanner
 panel_title: Scanlet
 options:
-  token: ""
   printers: []
   advertise: true
 schema:
-  # Empty means "generate one and keep it in /data".
-  token: str
   printers:
     - str
   advertise: bool

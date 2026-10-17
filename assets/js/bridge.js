@@ -11,27 +11,76 @@
 
 export const DEFAULT_BRIDGE = 'http://127.0.0.1:8787';
 
+/** The port a bridge listens on by default. */
+export const BRIDGE_PORT = 8787;
+
 /** Normalise a user-typed bridge address into an origin. */
 export function normaliseBridgeUrl(input) {
   let value = String(input || '').trim();
   if (!value) return '';
+  // A scheme that is not http(s) is not a bridge, and must not be turned into one.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value) && !/^https?:/i.test(value)) return '';
   if (!/^https?:\/\//i.test(value)) value = `http://${value}`;
   try {
     const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
     return `${url.protocol}//${url.host}`;
   } catch {
     return '';
   }
 }
 
-/** Pull a pairing code out of `#s=…`, `?token=…` or plain text. */
-export function tokenFromInput(input) {
-  const value = String(input || '').trim();
+/**
+ * A bridge's *base* URL: like `normaliseBridgeUrl`, but it keeps a path so a
+ * bridge served behind a prefix (Home Assistant's ingress, for one) stays
+ * reachable. Always ends with a slash, so relative paths resolve inside it.
+ */
+export function normaliseBridgeBase(input) {
+  let value = String(input || '').trim();
   if (!value) return '';
-  const match = /[#?&](?:s|token|code)=([^&\s]+)/i.exec(value);
-  if (match) return decodeURIComponent(match[1]);
-  if (/^[\w-]{6,64}$/.test(value)) return value;
-  return '';
+  if (/^[a-z][a-z0-9+.-]*:/i.test(value) && !/^https?:/i.test(value)) return '';
+  if (!/^https?:\/\//i.test(value)) value = `http://${value}`;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+    url.search = '';
+    url.hash = '';
+    if (!url.pathname.endsWith('/')) url.pathname += '/';
+    return url.toString();
+  } catch {
+    return '';
+  }
+}
+
+/** The directory this app was served from — the bridge's base when it serves us. */
+export function appBase() {
+  if (typeof location === 'undefined') return '';
+  return normaliseBridgeBase(new URL('.', location.href).toString());
+}
+
+/** True for the IPv4 ranges a home network actually uses. */
+export function isPrivateIpv4(host) {
+  const match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(String(host || ''));
+  if (!match) return false;
+  const [a, b] = [Number(match[1]), Number(match[2])];
+  if ([a, b].some((part) => part > 255)) return false;
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+}
+
+/**
+ * The names a bridge might answer to. Home Assistant's add-on advertises itself
+ * as `home-assistant.local`, and a phone's own resolver understands `.local` even
+ * though a browser has no mDNS of its own.
+ */
+export function bridgeHostNames(hostname = '') {
+  const names = new Set([
+    'scanlet.local',
+    'home-assistant.local',
+    'homeassistant.local',
+    'scanlet-home-assistant.local',
+  ]);
+  if (hostname) names.add(hostname);
+  return [...names];
 }
 
 class RequestError extends Error {
@@ -42,14 +91,16 @@ class RequestError extends Error {
   }
 }
 
-async function send(url, { path, method = 'GET', body = null, timeout = 4000, raw = false, token = '' } = {}) {
+async function send(base, { path, method = 'GET', body = null, timeout = 4000, raw = false } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   const headers = {};
   if (body) headers['content-type'] = 'application/json';
-  if (token) headers['x-scanlet-token'] = token;
   try {
-    const response = await fetch(new URL(path, url).toString(), {
+    // A relative path resolves inside the base, so a bridge behind a prefix
+    // (Home Assistant ingress) is reached at the right address.
+    const url = new URL(String(path).replace(/^\/+/, ''), base).toString();
+    const response = await fetch(url, {
       method,
       body,
       signal: controller.signal,
@@ -83,22 +134,19 @@ async function send(url, { path, method = 'GET', body = null, timeout = 4000, ra
 /* ─────────────────────────── the bridge ─────────────────────────── */
 
 export class BridgeClient {
-  constructor(url = DEFAULT_BRIDGE, token = '') {
-    this.url = normaliseBridgeUrl(url) || DEFAULT_BRIDGE;
-    this.token = token || '';
+  constructor(url = DEFAULT_BRIDGE) {
+    this.url = normaliseBridgeBase(url) || normaliseBridgeBase(DEFAULT_BRIDGE);
   }
 
-  /** Who is there? Never throws on an auth problem — look at `requiresToken`. */
-  async probe() {
-    const health = await send(this.url, { path: '/health', timeout: 2500, token: this.token });
+  /** Who is there? */
+  async probe({ timeout = 2500 } = {}) {
+    const health = await send(this.url, { path: 'health', timeout });
     return {
       url: this.url,
       ok: health?.ok !== false,
       version: health?.version || 'unknown',
       lan: Boolean(health?.lan),
       app: Boolean(health?.app),
-      requiresToken: Boolean(health?.requiresToken),
-      paired: health?.paired !== false,
       addresses: Array.isArray(health?.addresses) ? health.addresses : [],
       port: health?.port || 0,
       printers: Array.isArray(health?.printers) ? health.printers : [],
@@ -106,25 +154,23 @@ export class BridgeClient {
   }
 
   async discover() {
-    const data = await send(this.url, { path: '/printers', timeout: 8000, token: this.token });
+    const data = await send(this.url, { path: 'printers', timeout: 8000 });
     return Array.isArray(data?.printers) ? data.printers : [];
   }
 
   capabilities(id) {
     return send(this.url, {
-      path: `/printers/${encodeURIComponent(id)}/capabilities`,
+      path: `printers/${encodeURIComponent(id)}/capabilities`,
       timeout: 12000,
-      token: this.token,
     });
   }
 
   async probeAddress(address) {
     return send(this.url, {
-      path: '/probe',
+      path: 'probe',
       method: 'POST',
       body: JSON.stringify({ address }),
       timeout: 15000,
-      token: this.token,
     });
   }
 
@@ -134,12 +180,11 @@ export class BridgeClient {
    */
   async scan(id, options = {}, { onPage } = {}) {
     const response = await send(this.url, {
-      path: `/printers/${encodeURIComponent(id)}/scan`,
+      path: `printers/${encodeURIComponent(id)}/scan`,
       method: 'POST',
       body: JSON.stringify(options),
       timeout: 180_000,
       raw: true,
-      token: this.token,
     });
     return parseScanResponse(response, onPage);
   }
@@ -203,65 +248,90 @@ function indexOfBytes(haystack, needle, from = 0) {
 }
 
 /**
- * Look for bridges worth offering: this origin (when Scanlet is being served by
- * one), then the standard loopback address, then whatever the user used last.
+ * Look for bridges across the whole network, not just this origin.
+ *
+ * A browser cannot browse mDNS, so this probes instead: the origin that served
+ * this page (a bridge, or Home Assistant's ingress, which proxies one), the
+ * loopback helper, the well-known `.local` names a bridge may answer to, the
+ * whole `/24` this page is on when the browser will tell us the address, and
+ * whatever the user used last. Every hit is reported through `onBridge` as it
+ * arrives, so the UI can fill up while the sweep is still running.
  */
-export async function detectBridges({ remember = null, sameOrigin = true } = {}) {
+export async function detectBridges({
+  remember = null,
+  sameOrigin = true,
+  onBridge = null,
+  sweep = true,
+  hostTimeout = 1200,
+  sweepTimeout = 700,
+  concurrency = 48,
+} = {}) {
   const candidates = [];
-  const add = (url, token = '') => {
-    const clean = normaliseBridgeUrl(url);
-    if (!clean) return;
-    const existing = candidates.find((c) => c.url === clean);
-    // Keep whichever variant carries a pairing code.
-    if (existing) {
-      if (!existing.token && token) existing.token = token;
-      return;
-    }
-    candidates.push({ url: clean, token });
+  const seen = new Set();
+  const add = (url) => {
+    const base = normaliseBridgeBase(url);
+    if (!base || seen.has(base)) return;
+    seen.add(base);
+    candidates.push(base);
   };
 
-  // A code we already hold for an address should be offered to that address,
-  // whichever way we happen to have reached it.
-  const rememberedToken = (url) => {
-    const clean = normaliseBridgeUrl(url);
-    return remember?.url && normaliseBridgeUrl(remember.url) === clean ? remember.token || '' : '';
-  };
-
-  if (sameOrigin && typeof location !== 'undefined' && /^https?:$/.test(location.protocol)) {
-    add(location.origin, rememberedToken(location.origin));
-  }
-  add(DEFAULT_BRIDGE, rememberedToken(DEFAULT_BRIDGE));
+  const base = appBase();
+  if (sameOrigin && base && /^https?:$/.test(location.protocol)) add(base);
+  // A bridge the user connected to before, or just typed, comes first so it
+  // answers before the sweep has finished.
+  if (remember?.url) add(remember.url);
+  add(DEFAULT_BRIDGE);
 
   /*
-   * Names worth guessing: the default port on whatever host this page came from
-   * (a bridge beside a Home Assistant or an intranet app), and the bridge's own
-   * Bonjour name when the owner ran it with `--name scanlet`.
-   *
-   * Only attempted over http. From an https page the browser blocks plain-http
-   * subresources outright, so these could never succeed there — and a phone on
-   * the published app is exactly that case. A browser cannot browse mDNS, so
-   * that is the wall; the pairing link and its QR code are the way past it.
+   * Network guesses, only over http: from an https page the browser blocks
+   * plain-http requests to a LAN address as mixed content, so these could never
+   * succeed there. A bridge that serves https, or one reached same-origin
+   * through Home Assistant's ingress, is covered by the candidates above.
    */
+  const named = new Set();
   if (typeof location !== 'undefined' && location.protocol === 'http:') {
-    if (location.hostname) add(`http://${location.hostname}:8787`);
-    add('http://scanlet.local:8787');
+    for (const name of bridgeHostNames(location.hostname)) {
+      if (!name || name === 'localhost' || isPrivateIpv4(name)) continue;
+      named.add(normaliseBridgeBase(`http://${name}:${BRIDGE_PORT}`));
+    }
+    for (const url of named) add(url);
+    if (sweep && isPrivateIpv4(location.hostname)) {
+      const prefix = location.hostname.split('.').slice(0, 3).join('.');
+      for (let i = 1; i <= 254; i++) add(`http://${prefix}.${i}:${BRIDGE_PORT}`);
+    }
   }
 
-  if (remember?.url) add(remember.url, remember.token);
-
   const found = [];
-  for (const candidate of candidates) {
+  const record = (info) => {
+    found.push(info);
+    onBridge?.(info);
+  };
+
+  const probe = async (url) => {
+    // Well-known names and the loopback deserve a moment; a bare address in a
+    // /24 sweep is either there or is not.
+    const timeout = named.has(url) || url === base || url === normaliseBridgeBase(DEFAULT_BRIDGE)
+      ? hostTimeout
+      : sweepTimeout;
     try {
-      const info = await new BridgeClient(candidate.url, candidate.token).probe();
-      if (info.ok) {
-        found.push({ ...info, token: candidate.token, sameOrigin: candidate.url === location?.origin });
-      }
+      const info = await new BridgeClient(url).probe({ timeout });
+      if (info.ok) record({ ...info, sameOrigin: url === base });
     } catch {
       /* not a bridge; keep looking */
     }
-  }
-  // A bridge we are already paired with beats one that still needs a code.
-  found.sort((a, b) => Number(b.paired) - Number(a.paired));
+  };
+
+  const queue = candidates.slice();
+  const workers = Array.from({ length: Math.max(1, Math.min(concurrency, queue.length)) }, async () => {
+    while (queue.length) {
+      // eslint-disable-next-line no-await-in-loop
+      await probe(queue.shift());
+    }
+  });
+  await Promise.all(workers);
+
+  // The bridge that served this page is the one the user is already looking at.
+  found.sort((a, b) => Number(b.sameOrigin) - Number(a.sameOrigin));
   return found;
 }
 
@@ -395,10 +465,10 @@ function base64ToBytes(base64) {
 
 /* ─────────────────────────── compatibility helpers ─────────────────────────── */
 
-export const probe = (url, token = '') => new BridgeClient(url, token).probe();
-export const discover = (url, token = '') => new BridgeClient(url, token).discover();
-export const capabilities = (url, id, token = '') => new BridgeClient(url, token).capabilities(id);
-export const probeAddress = (url, address, token = '') => new BridgeClient(url, token).probeAddress(address);
+export const probe = (url) => new BridgeClient(url).probe();
+export const discover = (url) => new BridgeClient(url).discover();
+export const capabilities = (url, id) => new BridgeClient(url).capabilities(id);
+export const probeAddress = (url, address) => new BridgeClient(url).probeAddress(address);
 export const scan = (url, id, options = {}, extra) => new BridgeClient(url).scan(id, options, extra);
 
 /** Common eSCL colour modes, in the order most printers prefer them. */

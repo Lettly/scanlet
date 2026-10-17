@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.0
+
+- **No more pairing codes.** The network is the only security: the add-on answers
+  any device that can reach it, on the sidebar panel and on port 8787 alike. The
+  `token` option is gone, and nothing is seeded into the panel any more.
+- Scanlet finds the bridge on its own — the sidebar panel talks to it behind Home
+  Assistant's ingress path, and any other device on the network finds it at
+  `home-assistant.local` or through Scanlet's network sweep.
+
 ## 1.0.0
 
 - First release: the Scanlet bridge as a Home Assistant add-on.

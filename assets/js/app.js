@@ -33,7 +33,6 @@ const NARROW = window.matchMedia('(max-width: 980px)');
 
 export function mount() {
   cacheDom();
-  absorbBridgeTokenFromUrl();
   bindGlobal();
   bindAppBar();
   bindInspector();
@@ -1329,19 +1328,6 @@ function recalledBridge() {
   }
 }
 
-/**
- * A bridge can hand us its code through the URL it printed — that is how a
- * phone gets paired by opening one link.
- */
-function absorbBridgeTokenFromUrl() {
-  const fromHash = bridgeLib.tokenFromInput(location.hash || '');
-  if (!fromHash) return false;
-  store.state.bridge = { url: location.origin, token: fromHash };
-  rememberBridge();
-  history.replaceState(null, '', location.pathname + location.search);
-  return true;
-}
-
 function bindScanner() {
   ui.scanner = {
     modal: $('#modal-scanner'),
@@ -1351,10 +1337,6 @@ function bindScanner() {
     dot: $('#bridge-dot'),
     url: $('#bridge-url'),
     connect: $('#bridge-connect'),
-    pairWrap: $('#bridge-pair-wrap'),
-    token: $('#bridge-token'),
-    pair: $('#bridge-pair'),
-    readQr: $('#bridge-read-qr'),
     list: $('#printer-list'),
     listWrap: $('#printer-list-wrap'),
     address: $('#printer-addr'),
@@ -1376,13 +1358,9 @@ function bindScanner() {
     shareCopy: $('#bridge-qr-copy'),
     extDot: $('#ext-dot'),
     extStatus: $('#ext-status'),
-    qrModal: $('#modal-qr'),
-    qrVideo: $('#qr-video'),
-    helpHint: $('#bridge-pair-hint'),
   };
 
   ui.scanner.url.value = store.state.bridge?.url || bridgeLib.DEFAULT_BRIDGE;
-  ui.scanner.readQr.hidden = !qrLib.qrReadingSupported();
 }
 
 async function openScanner() {
@@ -1417,17 +1395,26 @@ function setScanHint(message) {
   ui.scanner.hint.textContent = message || '';
 }
 
-/** Find the best bridge: this origin first, then loopback, then last used. */
+/** Find the best bridge across the network, preferring the one serving this page. */
 async function refreshBridge() {
   setBridgeStatus('busy', 'Looking for a scanning bridge…');
-  let found = [];
+  let best = null;
+  const consider = (info) => {
+    // A bridge serving this page wins; otherwise keep the first that answered.
+    if (best && !(info.sameOrigin && !best.sameOrigin)) return;
+    best = info;
+    scannerState.bridge = info;
+    store.state.bridge = { url: info.url };
+    rememberBridge();
+    applyBridge(info);
+  };
+
   try {
-    found = await bridgeLib.detectBridges({ remember: recalledBridge() });
+    await bridgeLib.detectBridges({ remember: recalledBridge(), onBridge: consider });
   } catch {
-    found = [];
+    /* the sweep failed wholesale; fall through to the empty state */
   }
 
-  const best = found[0];
   if (!best) {
     scannerState.bridge = null;
     scannerState.client = null;
@@ -1435,17 +1422,13 @@ async function refreshBridge() {
       'bad',
       'No bridge answered. Start one, or paste its address — it is one Node command.',
     );
-    ui.scanner.pairWrap.hidden = true;
     ui.scanner.shareToggle.hidden = true;
     ui.scanner.share.hidden = true;
     renderPrinterList([]);
     return null;
   }
 
-  scannerState.bridge = best;
-  store.state.bridge = { url: best.url, token: best.token || '' };
-  rememberBridge();
-  return applyBridge(best);
+  return best;
 }
 
 function applyBridge(info) {
@@ -1453,21 +1436,12 @@ function applyBridge(info) {
   ui.scanner.servedByBridge.hidden = !info.sameOrigin;
   ui.scanner.shareToggle.hidden = !info.lan;
 
-  if (info.requiresToken && !info.paired) {
-    setBridgeStatus('bad', `Found a bridge at ${info.url}, but it needs a pairing code.`);
-    ui.scanner.pairWrap.hidden = false;
-    ui.scanner.share.hidden = true;
-    renderPrinterList([]);
-    return info;
-  }
-
-  ui.scanner.pairWrap.hidden = !info.requiresToken;
   setBridgeStatus(
     'ok',
     `Connected to ${info.url}${info.lan ? ' — shared on your network' : ''}` +
       ` · bridge ${info.version}`,
   );
-  scannerState.client = new bridgeLib.BridgeClient(info.url, info.token || '');
+  scannerState.client = new bridgeLib.BridgeClient(info.url);
   renderPrinterList(info.printers || []);
   renderShare(info);
   // Refresh in the background: discovery on the bridge side takes a moment.
@@ -1593,40 +1567,12 @@ function fillScannerOptions(caps) {
 
 async function connectToTypedBridge() {
   const url = bridgeLib.normaliseBridgeUrl(ui.scanner.url.value) || bridgeLib.DEFAULT_BRIDGE;
-  const token = bridgeLib.tokenFromInput(ui.scanner.token.value) || store.state.bridge?.token || '';
-  store.state.bridge = { url, token };
+  store.state.bridge = { url };
   rememberBridge();
   setBridgeStatus('busy', `Connecting to ${url}…`);
   const info = await refreshBridge();
   if (!info) return;
-  if (info.requiresToken && !info.paired) {
-    setBridgeStatus('bad', `${url} needs a pairing code — paste it below.`);
-    ui.scanner.pairWrap.hidden = false;
-    return;
-  }
   await loadPrinters();
-}
-
-async function pairBridge() {
-  const token = bridgeLib.tokenFromInput(ui.scanner.token.value) || ui.scanner.token.value.trim();
-  if (!token) {
-    setBridgeStatus('bad', 'Paste the pairing code first.');
-    return;
-  }
-  store.state.bridge = {
-    url: bridgeLib.normaliseBridgeUrl(ui.scanner.url.value) || store.state.bridge?.url || bridgeLib.DEFAULT_BRIDGE,
-    token,
-  };
-  rememberBridge();
-  setBridgeStatus('busy', 'Pairing…');
-  const info = await refreshBridge();
-  if (info?.paired) {
-    ui.scanner.token.value = '';
-    await loadPrinters();
-    toast('Paired with the bridge');
-  } else if (info) {
-    setBridgeStatus('bad', 'That code was not accepted. Check it and try again.');
-  }
 }
 
 /** Show a QR code so a phone can join with one scan. */
@@ -1638,38 +1584,16 @@ async function renderShare(info) {
   ui.scanner.share.hidden = window.innerWidth < 900;
   const host = info.addresses?.[0] || location.hostname;
   const scheme = info.url.startsWith('https') ? 'https' : 'http';
-  const url = `${scheme}://${host}:${info.port}/${info.token ? `#s=${info.token}` : ''}`;
+  const url = `${scheme}://${host}:${info.port}/`;
   ui.scanner.shareUrl.value = url;
-  ui.scanner.shareHint.textContent = info.token
-    ? 'The link carries the pairing code, so the other device needs no setup.'
-    : 'This bridge has no pairing code, so anyone on your network can use it.';
+  ui.scanner.shareHint.textContent =
+    'Open this on another device to scan — no setup, no code. Anyone on your network can use it.';
   try {
     const { dataUrl } = await qrLib.renderQr(url, { size: 180 });
     ui.scanner.shareQr.src = dataUrl;
     ui.scanner.shareQr.hidden = false;
   } catch {
     ui.scanner.shareQr.hidden = true;
-  }
-}
-
-async function readPairingQr() {
-  if (!qrLib.qrReadingSupported()) return;
-  openModal(ui.scanner.qrModal);
-  setScanHint('');
-  try {
-    const text = await qrLib.readQr({ video: ui.scanner.qrVideo });
-    closeModal(ui.scanner.qrModal);
-    const url = bridgeLib.normaliseBridgeUrl(text);
-    const token = bridgeLib.tokenFromInput(text);
-    if (!url || !token) throw new Error('That code does not look like a Scanlet bridge link.');
-    store.state.bridge = { url, token };
-    rememberBridge();
-    ui.scanner.url.value = url;
-    ui.scanner.token.value = token;
-    await pairBridge();
-  } catch (error) {
-    closeModal(ui.scanner.qrModal);
-    toast(error.message, { kind: 'err', timeout: 6000 });
   }
 }
 
@@ -2298,8 +2222,6 @@ function bindModals() {
   $('#exp-preset-small').addEventListener('click', () => applyPreset('small'));
 
   $('#bridge-connect').addEventListener('click', connectToTypedBridge);
-  $('#bridge-pair').addEventListener('click', pairBridge);
-  $('#bridge-read-qr').addEventListener('click', readPairingQr);
   $('#bridge-share-toggle').addEventListener('click', () => {
     ui.scanner.share.hidden = !ui.scanner.share.hidden;
   });

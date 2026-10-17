@@ -85,7 +85,7 @@ export const state = {
   activeId: null,
   selection: new Set(),
   busy: false,
-  bridge: { url: '', token: '' },
+  bridge: { url: '' },
 };
 
 const listeners = new Set();

@@ -7,8 +7,8 @@
  * Two bridge configurations are exercised:
  *   • a private loopback bridge, driven with the real client module
  *     (assets/js/bridge.js) so the multipart parsing the browser relies on runs too
- *   • a paired LAN bridge that also serves the app, checking auth, pairing and
- *     static file serving — the setup a phone uses
+ *   • a LAN bridge that also serves the app, checking static file serving and the
+ *     single-URL scan routes — the setup a phone uses
  */
 
 import assert from 'node:assert/strict';
@@ -22,7 +22,6 @@ import {
   buildAnnouncement,
   createResponder,
   createServer,
-  createToken,
   parseMessage,
   summariseBridges,
 } from '../scanlet-bridge.mjs';
@@ -63,12 +62,10 @@ async function privateBridge() {
   };
 }
 
-async function pairedBridge() {
-  const token = createToken();
-  const bridge = createServer({ log: () => {}, token, appDir: APP_DIR, lan: true, port: 8787 });
+async function lanBridge() {
+  const bridge = createServer({ log: () => {}, appDir: APP_DIR, lan: true, port: 8787 });
   const port = await listen(bridge);
   return {
-    token,
     bridge,
     port,
     url: `http://127.0.0.1:${port}`,
@@ -84,8 +81,7 @@ async function testPrivate() {
     await check('health answers and is ok', () => {
       assert.equal(health.ok, true);
       assert.ok(health.version);
-      assert.equal(health.requiresToken, false);
-      assert.equal(health.paired, true);
+      assert.equal(health.requiresToken, undefined);
     });
 
     const probed = await client.probeAddress(env.scannerAddress);
@@ -151,51 +147,34 @@ async function testPrivate() {
   }
 }
 
-async function testPaired() {
-  const env = await pairedBridge();
-  const client = new BridgeClient(env.url, env.token);
+async function testLan() {
+  const env = await lanBridge();
+  const client = new BridgeClient(env.url);
   const mock = createMockScanner({ pages: 2 });
   const mockPort = await listen(mock);
   try {
-    const unauth = await fetch(`${env.url}/health`).then((r) => r.json());
-    await check('health is open but withholds devices until paired', () => {
-      assert.equal(unauth.ok, true);
-      assert.equal(unauth.requiresToken, true);
-      assert.equal(unauth.paired, false);
-      assert.equal(unauth.app, true);
-      assert.equal(unauth.lan, true);
-      assert.deepEqual(unauth.printers, []);
-      assert.deepEqual(unauth.addresses, []);
-    });
-
-    const denied = await fetch(`${env.url}/printers`);
-    await check('device routes are refused without the code', async () => {
-      assert.equal(denied.status, 401);
-      const body = await denied.json();
-      assert.equal(body.requiresToken, true);
-    });
-
-    const wrong = await new BridgeClient(env.url, 'not-the-code').discover().catch((error) => error);
-    await check('a wrong code is refused', () => {
-      assert.ok(wrong instanceof Error, 'expected an error');
-      assert.equal(wrong.status, 401);
-    });
-
-    const headerAuth = await client.discover();
-    await check('the code in a header is accepted', () => {
-      assert.ok(Array.isArray(headerAuth));
-    });
-
-    const queryAuth = await fetch(`${env.url}/printers?token=${encodeURIComponent(env.token)}`);
-    await check('the code in a query string is accepted', () => {
-      assert.equal(queryAuth.status, 200);
-    });
-
-    const health = await client.probe();
-    await check('paired health reports the bridge is serving the app', () => {
-      assert.equal(health.paired, true);
+    const health = await fetch(`${env.url}/health`).then((r) => r.json());
+    await check('health is open and needs no code', () => {
+      assert.equal(health.ok, true);
       assert.equal(health.app, true);
-      assert.equal(health.port, env.port);
+      assert.equal(health.lan, true);
+      assert.equal(health.requiresToken, undefined, 'there is no pairing code to require');
+      assert.ok(Array.isArray(health.printers));
+      assert.ok(Array.isArray(health.addresses));
+    });
+
+    const printers = await fetch(`${env.url}/printers`);
+    await check('device routes are open to the network', async () => {
+      assert.equal(printers.status, 200);
+      const body = await printers.json();
+      assert.ok(Array.isArray(body.printers));
+    });
+
+    const probe = await client.probe();
+    await check('the client probes the LAN bridge with no code', () => {
+      assert.equal(probe.ok, true);
+      assert.equal(probe.app, true);
+      assert.equal(probe.port, env.port);
     });
 
     const index = await fetch(`${env.url}/`);
@@ -229,9 +208,8 @@ async function testPaired() {
     });
 
     const preflight = await fetch(`${env.url}/printers`, { method: 'OPTIONS' });
-    await check('preflight advertises the token header and private network access', () => {
+    await check('preflight allows private network access', () => {
       assert.equal(preflight.status, 204);
-      assert.match(preflight.headers.get('access-control-allow-headers'), /x-scanlet-token/);
       assert.equal(preflight.headers.get('access-control-allow-private-network'), 'true');
     });
 
@@ -275,11 +253,9 @@ async function testPaired() {
     });
 
     const shared = await client.probeAddress(`127.0.0.1:${mockPort}`);
-    await check('a Shortcut can scan with one URL, pairing code included', async () => {
+    await check('a Shortcut can scan with one URL, no code needed', async () => {
       // No headers: this is what "Get Contents of URL" can actually do.
-      const response = await fetch(
-        `${env.url}/printers/${encodeURIComponent(shared.printer.id)}/scan.pdf?token=${encodeURIComponent(env.token)}`,
-      );
+      const response = await fetch(`${env.url}/printers/${encodeURIComponent(shared.printer.id)}/scan.pdf`);
       assert.equal(response.status, 200);
       assert.match(response.headers.get('content-type'), /application\/pdf/);
       const bytes = Buffer.from(await response.arrayBuffer());
@@ -287,11 +263,6 @@ async function testPaired() {
       assert.match(bytes.subarray(-8).toString('latin1'), /%%EOF/);
     });
 
-    await check('the same URL without the code is refused', async () => {
-      const response = await fetch(`${env.url}/printers/${encodeURIComponent(shared.printer.id)}/scan.pdf`);
-      assert.equal(response.status, 401);
-      await response.arrayBuffer();
-    });
     await check('the TLS certificate is downloadable for a phone to trust', async () => {
       const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'scanlet-cert-'));
       const pemPath = path.join(sandbox, 'cert.pem');
@@ -454,7 +425,7 @@ async function testSingleUrl() {
 
 async function testDiscovery() {
   const target = { instance: 'scanlet-unit', host: 'scanlet-unit', port: 4321, address: '127.0.0.1' };
-  const txt = { txtvers: '1', vers: '1.2.3', ty: 'Scanlet Bridge', path: '/', tls: '0', token: 'required' };
+  const txt = { txtvers: '1', vers: '1.2.3', ty: 'Scanlet Bridge', path: '/', tls: '0' };
 
   await check('the advertisement reads back as a bridge', () => {
     const found = summariseBridges(parseMessage(buildAnnouncement({ ...target, txt })));
@@ -463,16 +434,13 @@ async function testDiscovery() {
     assert.equal(found[0].address, '127.0.0.1');
     assert.equal(found[0].port, 4321);
     assert.equal(found[0].version, '1.2.3');
-    assert.equal(found[0].tokenRequired, true);
     assert.equal(found[0].url, 'http://127.0.0.1:4321');
   });
 
-  await check('the advertisement says whether a code is needed, never the code', () => {
-    const secret = 'a-pairing-code-nobody-should-see';
+  await check('the advertisement carries no secret, because there is none', () => {
     const packet = buildAnnouncement({ ...target, txt });
-    assert.ok(!packet.includes(secret), 'a secret must never appear in an mDNS record');
-    assert.ok(packet.includes(Buffer.from('required')), 'but the fact that one is needed should');
     assert.ok(packet.includes(Buffer.from('Scanlet Bridge')));
+    assert.ok(!packet.includes(Buffer.from('token')), 'no pairing token should be advertised');
   });
 
   await check('a non-IPv4 address is refused rather than advertised', () => {
@@ -553,7 +521,7 @@ async function testDiscovery() {
 async function main() {
   await testPrivate();
   await testSingleUrl();
-  await testPaired();
+  await testLan();
   await testDiscovery();
 
   let failed = 0;

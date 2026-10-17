@@ -16,7 +16,8 @@
  * reachable only by Scanlet running on the same machine. With `--lan` it becomes
  * a small scan server that also serves the Scanlet app itself, so any device on
  * your network — a phone, a tablet — can open it and scan, with no install and
- * no mixed-content problems. Access is gated by a pairing token.
+ * no mixed-content problems. There is no pairing: reaching it means being on the
+ * network, and the network is the security boundary.
  *
  * It discovers scanners over Bonjour/mDNS (`_uscan._tcp`, `_uscans._tcp`,
  * `_scanner._tcp`) and drives them with eSCL — the driverless protocol Apple
@@ -29,12 +30,11 @@ import dgram from 'node:dgram';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const MDNS_ADDR = '224.0.0.251';
 const MDNS_PORT = 5353;
 const SERVICE_TYPES = ['_uscan._tcp.local', '_uscans._tcp.local', '_scanner._tcp.local'];
@@ -206,8 +206,7 @@ function encodeRecord(name, type, rdata, { ttl, flush = true } = {}) {
 
 /**
  * The records that say "a Scanlet bridge is here": PTR, SRV, TXT and A, in one
- * packet. Deliberately carries no secret — the pairing code is never advertised
- * — only whether one is needed.
+ * packet. It carries nothing secret — there is no pairing code to leak.
  */
 export function buildAnnouncement({ instance, host, port, address, txt = {}, ttl = 120 }) {
   const instanceName = `${instance}.${BRIDGE_SERVICE}`;
@@ -374,8 +373,7 @@ export function discover({ timeout = 2500, services = SERVICE_TYPES } = {}) {
 
 /**
  * Fold raw records into the bridges advertising `_scanlet._tcp.local`.
- * The advertised records carry no secret: whether a pairing code is needed, never
- * the code itself.
+ * The advertised records carry no secret: there is no pairing code.
  */
 export function summariseBridges(records) {
   const announced = new Set();
@@ -405,7 +403,6 @@ export function summariseBridges(records) {
       address,
       port: target.port,
       version: properties.vers || '',
-      tokenRequired: properties.token === 'required',
       url: `http://${address}:${target.port}`,
     });
   }
@@ -667,29 +664,6 @@ export async function probeAddress(address) {
   throw new Error(`No eSCL scanner answered at ${cleaned}.`);
 }
 
-/* ───────────────────────────── pairing ───────────────────────────── */
-
-export function createToken() {
-  return crypto.randomBytes(9).toString('base64url');
-}
-
-/** Constant-time-ish comparison so a token cannot be guessed by timing. */
-function sameToken(a, b) {
-  if (!a || !b) return false;
-  const left = Buffer.from(String(a));
-  const right = Buffer.from(String(b));
-  if (left.length !== right.length) return false;
-  try {
-    return crypto.timingSafeEqual(left, right);
-  } catch {
-    return false;
-  }
-}
-
-function tokenFrom(request, url) {
-  return request.headers['x-scanlet-token'] || url.searchParams.get('token') || '';
-}
-
 /* ───────────────────────────── static files ───────────────────────────── */
 
 export const MIME = {
@@ -763,7 +737,7 @@ function corsHeaders(extra = {}) {
   return {
     'access-control-allow-origin': '*',
     'access-control-allow-methods': 'GET,POST,OPTIONS',
-    'access-control-allow-headers': 'content-type, x-scanlet-token',
+    'access-control-allow-headers': 'content-type',
     // Chrome's Local Network Access preflight
     'access-control-allow-private-network': 'true',
     ...extra,
@@ -797,10 +771,9 @@ function readBody(request) {
  * The request handler, shared by the http and https servers.
  * @param {object} options
  * @param {(message:string)=>void} [options.log]
- * @param {string} [options.token]   when set, every device/scan route needs it
  * @param {string} [options.appDir]  directory to serve the Scanlet app from
  */
-export function createHandler({ log = () => {}, token = '', appDir = '', lan = false, port = 0, certificatePath = '' } = {}) {
+export function createHandler({ log = () => {}, appDir = '', lan = false, port = 0, certificatePath = '' } = {}) {
   let cache = { at: 0, printers: [], caps: new Map() };
   const manual = new Map(); // id → printer, added by address
 
@@ -921,23 +894,20 @@ export function createHandler({ log = () => {}, token = '', appDir = '', lan = f
 
     const url = new URL(request.url, 'http://localhost');
     const parts = url.pathname.split('/').filter(Boolean);
-    const authorised = !token || sameToken(tokenFrom(request, url), token);
     const hostPort = Number((request.headers.host || '').split(':')[1]) || port;
 
     try {
-      // ── liveness: always open, and deliberately cheap so probing is instant ──
+      // ── liveness: deliberately cheap so probing is instant ──
       if (url.pathname === '/health') {
         return sendJson(response, 200, {
           ok: true,
           version: VERSION,
           lan,
-          requiresToken: Boolean(token),
-          paired: authorised,
           app: Boolean(appDir),
-          // LAN addresses let a paired client show a QR code for another device.
-          addresses: authorised ? interfaceAddresses() : [],
+          // LAN addresses let a client show a QR code for another device.
+          addresses: interfaceAddresses(),
           port: hostPort,
-          printers: authorised ? cachedPrinters() : [],
+          printers: cachedPrinters(),
         });
       }
 
@@ -961,8 +931,7 @@ export function createHandler({ log = () => {}, token = '', appDir = '', lan = f
         }
       }
 
-      // ── the app itself is public: a phone has to load it *before* it can
-      //    present the pairing code it was given ──
+      // ── the app itself is served to anyone who asks, and so is the API ──
       const isApi = /^\/(health|printers|probe|scan\.)/.test(url.pathname);
       const isRead = request.method === 'GET' || request.method === 'HEAD';
       if (isRead && appDir && !isApi) {
@@ -970,13 +939,6 @@ export function createHandler({ log = () => {}, token = '', appDir = '', lan = f
           return undefined;
         }
         return sendJson(response, 404, { error: 'Not found' });
-      }
-
-      if (!authorised) {
-        return sendJson(response, 401, {
-          error: 'This bridge needs a pairing code. Open the address shown by the bridge, including its #code.',
-          requiresToken: true,
-        });
       }
 
       if (url.pathname === '/printers') {
@@ -1007,7 +969,7 @@ export function createHandler({ log = () => {}, token = '', appDir = '', lan = f
       }
 
       // …and a friendlier form for humans and scripts, with a plain address:
-      //   /scan.pdf?printer=192.168.1.42&token=…
+      //   /scan.pdf?printer=192.168.1.42
       const rootScan = /^\/scan\.(pdf|jpe?g|png)$/i.exec(url.pathname);
       if (rootScan && request.method === 'GET') {
         const reference = url.searchParams.get('printer') || url.searchParams.get('address') || '';
@@ -1123,7 +1085,6 @@ function main() {
       host: { type: 'string', default: '' },
       lan: { type: 'boolean', default: false },
       tls: { type: 'boolean', default: false },
-      token: { type: 'string', default: '' },
       app: { type: 'string', default: '' },
       name: { type: 'string', default: '' },
       advertise: { type: 'boolean', default: false },
@@ -1138,7 +1099,6 @@ function main() {
   const lan = values.lan;
   const host = values.host || (lan ? '0.0.0.0' : '127.0.0.1');
   const port = Number(values.port) || 8787;
-  const token = values.token || (lan ? createToken() : '');
   const appDir = values['no-serve'] ? '' : resolveAppDir(values.app);
   // A DNS label, so it can be both the instance name and the SRV target.
   const name = (values.name || os.hostname().replace(/\.local$/i, ''))
@@ -1168,12 +1128,12 @@ function main() {
     }
   }
 
-  const handler = createHandler({ log, token, appDir, lan, port, certificatePath });
+  const handler = createHandler({ log, appDir, lan, port, certificatePath });
   const server = tlsOptions ? https.createServer(tlsOptions, handler) : http.createServer(handler);
   let responder = null;
 
   const addresses = interfaceAddresses();
-  const printUrl = (address) => `${scheme}://${address}:${port}/${token ? `#s=${token}` : ''}`;
+  const printUrl = (address) => `${scheme}://${address}:${port}/`;
 
   server.listen(port, host, () => {
     console.log(`Scanlet bridge ${VERSION}`);
@@ -1187,8 +1147,8 @@ function main() {
           for (const address of addresses.slice(1)) console.log(`                                 ${printUrl(address)}`);
         }
         console.log('');
-        console.log('  The link carries a pairing code. Anyone on your network with it can');
-        console.log('  reach your printers, so treat it like a password.');
+        console.log('  Anyone on your network can reach it, and therefore your printers.');
+        console.log('  There is no pairing code — the network itself is the boundary.');
         if (values.tls) {
           console.log('');
           console.log('  Your browser will warn about the self-signed certificate once —');
@@ -1235,8 +1195,6 @@ function main() {
             ty: 'Scanlet Bridge',
             path: '/',
             tls: scheme === 'https' ? '1' : '0',
-            // Whether a pairing code is needed — never the code itself.
-            token: token ? 'required' : 'none',
           },
           log,
         });

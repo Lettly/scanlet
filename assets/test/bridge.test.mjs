@@ -4,14 +4,22 @@
  *
  *   node assets/test/bridge.test.mjs
  *
- * `assets/js/bridge.js` builds URLs, reads pairing codes and splits the
+ * `assets/js/bridge.js` builds URLs, reads bridge addresses and splits the
  * multipart body the bridge streams back for a multi-page scan. None of that
  * needs a DOM, so it runs in plain Node against bodies shaped exactly like the
  * ones `bridge/scanlet-bridge.mjs` writes.
  */
 
 import assert from 'node:assert/strict';
-import { DEFAULT_BRIDGE, normaliseBridgeUrl, tokenFromInput, splitMultipart } from '../js/bridge.js';
+import {
+  DEFAULT_BRIDGE,
+  normaliseBridgeUrl,
+  normaliseBridgeBase,
+  isPrivateIpv4,
+  bridgeHostNames,
+  detectBridges,
+  splitMultipart,
+} from '../js/bridge.js';
 
 const results = [];
 async function check(name, fn) {
@@ -32,13 +40,76 @@ await check('normaliseBridgeUrl accepts what people type', () => {
   assert.equal(normaliseBridgeUrl('not a url'), '');
 });
 
-await check('tokenFromInput reads a code out of a link or plain text', () => {
-  assert.equal(tokenFromInput('http://127.0.0.1:8787/#s=ABC123'), 'ABC123');
-  assert.equal(tokenFromInput('http://x/?token=abcdef'), 'abcdef');
-  assert.equal(tokenFromInput('#s=with%20space'), 'with space');
-  assert.equal(tokenFromInput('pl4inC0de'), 'pl4inC0de');
-  assert.equal(tokenFromInput('abc'), '', 'too short to be a code');
-  assert.equal(tokenFromInput(''), '');
+await check('normaliseBridgeBase keeps a path, so an ingress prefix survives', () => {
+  assert.equal(normaliseBridgeBase('http://127.0.0.1:8787'), 'http://127.0.0.1:8787/');
+  assert.equal(
+    normaliseBridgeBase('https://ha:8123/api/hassio_ingress/abc'),
+    'https://ha:8123/api/hassio_ingress/abc/',
+  );
+  assert.equal(normaliseBridgeBase('http://box:9000/path?x=1'), 'http://box:9000/path/');
+  assert.equal(normaliseBridgeBase('ftp://box/'), '', 'only http(s) is a bridge');
+  assert.equal(normaliseBridgeBase(''), '');
+});
+
+await check('isPrivateIpv4 recognises home networks, not public ones', () => {
+  assert.equal(isPrivateIpv4('192.168.1.50'), true);
+  assert.equal(isPrivateIpv4('10.0.0.4'), true);
+  assert.equal(isPrivateIpv4('172.16.0.1'), true);
+  assert.equal(isPrivateIpv4('172.32.0.1'), false);
+  assert.equal(isPrivateIpv4('8.8.8.8'), false);
+  assert.equal(isPrivateIpv4('homeassistant.local'), false);
+  assert.equal(isPrivateIpv4(''), false);
+});
+
+await check('bridgeHostNames covers Home Assistant and the bridge’s own names', () => {
+  const names = bridgeHostNames('192.168.1.50');
+  assert.ok(names.includes('home-assistant.local'), 'the add-on advertises this');
+  assert.ok(names.includes('homeassistant.local'));
+  assert.ok(names.includes('scanlet.local'));
+  assert.ok(names.includes('192.168.1.50'));
+});
+
+await check('detectBridges sweeps the whole /24 and finds a bridge on the network', async () => {
+  const realLocation = globalThis.location;
+  const realFetch = globalThis.fetch;
+  const tried = [];
+  try {
+    globalThis.location = {
+      protocol: 'http:',
+      hostname: '192.168.1.50',
+      href: 'http://192.168.1.50:8899/',
+      origin: 'http://192.168.1.50:8899',
+    };
+    globalThis.fetch = async (url) => {
+      const href = String(url);
+      tried.push(href);
+      if (href === 'http://192.168.1.42:8787/health') {
+        return {
+          ok: true,
+          json: async () => ({
+            ok: true,
+            version: '9.9.9',
+            lan: true,
+            app: false,
+            addresses: ['192.168.1.50'],
+            port: 8787,
+            printers: [],
+          }),
+        };
+      }
+      throw new Error('nothing there');
+    };
+
+    const found = await detectBridges({ concurrency: 64 });
+    assert.equal(found.length, 1, 'exactly the one bridge should answer');
+    assert.equal(found[0].url, 'http://192.168.1.42:8787/');
+    assert.equal(found[0].version, '9.9.9');
+    assert.ok(tried.includes('http://192.168.1.42:8787/health'), 'the sweep should reach it');
+    assert.ok(tried.length > 200, `the sweep should try most of the /24 (tried ${tried.length})`);
+  } finally {
+    globalThis.location = realLocation;
+    globalThis.fetch = realFetch;
+  }
 });
 
 await check('DEFAULT_BRIDGE is the loopback helper', () => {

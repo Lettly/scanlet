@@ -361,21 +361,6 @@
           <button class="btn" id="bridge-connect">Connect</button>
         </div>
 
-        <div class="field" id="bridge-pair-wrap" hidden>
-          <label for="bridge-token">Pairing code</label>
-          <div class="field-row">
-            <input class="input grow" id="bridge-token" placeholder="the #code from the bridge's address" spellcheck="false" />
-            <button class="btn" id="bridge-pair">Pair</button>
-            <button class="btn" id="bridge-read-qr" hidden title="Read the code from another screen">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4M8 12h8"/></svg>
-              Scan
-            </button>
-          </div>
-          <p class="hint" id="bridge-pair-hint">
-            On a phone: open the address the bridge printed, then “Add to Home Screen”.
-          </p>
-        </div>
-
         <div class="btn-row">
           <button class="btn ghost sm" id="btn-bridge-help">How do I run the bridge?</button>
           <button class="btn ghost sm" id="bridge-share-toggle" hidden>Use Scanlet on another device</button>
@@ -473,26 +458,6 @@
   </div>
 </div>
 
-<!-- ─────────────────────────  qr reader  ───────────────────────── -->
-<div class="modal" id="modal-qr" hidden>
-  <div class="sheet narrow">
-    <header class="sheet-head">
-      <strong>Scan the pairing code</strong>
-      <button class="icon-btn" data-close aria-label="Close">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
-      </button>
-    </header>
-    <div class="sheet-body">
-      <p class="hint">Point this device at the QR code shown by Scanlet on the other screen.</p>
-      <div class="qr-stage">
-        <video id="qr-video" playsinline muted></video>
-        <div class="qr-frame" aria-hidden="true"></div>
-      </div>
-    </div>
-  </div>
-</div>
-
-
 <!-- ─────────────────────────  bridge help  ───────────────────────── -->
 <div class="modal" id="modal-help" hidden>
   <div class="sheet">
@@ -509,17 +474,17 @@
       <ol class="steps">
         <li>Download <code>bridge/scanlet-bridge.mjs</code> from this repository.</li>
         <li><code>node scanlet-bridge.mjs</code> — for this machine only.</li>
-        <li><code>node scanlet-bridge.mjs --lan</code> — also serves Scanlet to your phone, with a
-        pairing link you can scan as a QR code.</li>
+        <li><code>node scanlet-bridge.mjs --lan</code> — also serves Scanlet to your phone;
+        open the address it prints on any device on your network.</li>
         <li>Leave it running and press <em>Connect</em> above.</li>
       </ol>
       <pre class="code" id="help-cmd">node scanlet-bridge.mjs --lan</pre>
       <p class="hint">Add <code>--tls</code> to serve over https. A phone needs https for the camera,
       the service worker and “Add to Home Screen”, because browsers only treat https and localhost
       as secure.</p>
-      <p class="hint">The bridge only ever talks to printers on your local network, and in
-      <code>--lan</code> mode every request needs the pairing code it prints. Prefer the browser
-      extension on a desktop: it needs no server at all.</p>
+      <p class="hint">The bridge only ever talks to printers on your local network. In
+      <code>--lan</code> mode anyone who can reach it can scan, so keep it off the public internet.
+      Prefer the browser extension on a desktop: it needs no server at all.</p>
       <button class="btn" id="help-copy">Copy command</button>
     </div>
   </div>

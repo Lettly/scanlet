@@ -40,16 +40,11 @@ if (values.json) {
   for (const bridge of bridges) {
     console.log(`${bridge.name}${bridge.version ? ` (v${bridge.version})` : ''}`);
     console.log(`  address   ${bridge.address}:${bridge.port}`);
-    console.log(`  open      ${bridge.url}${bridge.tokenRequired ? '/#s=<pairing code>' : ''}`);
-    console.log(`  pairing   ${bridge.tokenRequired ? 'needed — see the bridge log' : 'not needed'}`);
+    console.log(`  open      ${bridge.url}`);
     console.log(`  service   ${bridge.instance}`);
     console.log('');
   }
-  console.log(
-    bridges.some((bridge) => bridge.tokenRequired)
-      ? 'Open the address above with the pairing code from the bridge log appended as #s=…'
-      : 'Open the address above in Scanlet: it pairs itself.',
-  );
+  console.log('Open the address above in Scanlet — it needs no pairing code.');
 }
 
 process.exit(bridges.length ? 0 : 1);

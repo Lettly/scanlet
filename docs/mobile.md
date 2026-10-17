@@ -53,7 +53,7 @@ call.
 2. Add **Get Contents of URL**, set the URL to:
 
    ```
-   https://192.168.1.50:8787/scan.pdf?printer=192.168.1.42&token=YOURCODE
+   https://192.168.1.50:8787/scan.pdf?printer=192.168.1.42
    ```
 
    `192.168.1.50` is the machine running the bridge; `printer=` is the printer, and can
@@ -143,7 +143,7 @@ node bridge/scanlet-bridge.mjs --lan --tls  # also camera, offline, install
 ### 4. Unattended scanning
 
 Anything that can fetch a URL can pull a scan: Tasker, HTTP Request Shortcuts, a cron
-job, `curl -o scan.pdf 'http://192.168.1.50:8787/scan.pdf?printer=192.168.1.42&token=CODE'`.
+job, `curl -o scan.pdf 'http://192.168.1.50:8787/scan.pdf?printer=192.168.1.42'`.
 
 ### What does not work on Android, and why
 
@@ -193,5 +193,5 @@ one WebView, one `Info.plist`/manifest entry, and the four methods.
 
 - **Storage is per origin.** Documents kept at `https://lettly.github.io/scanlet/` are
   separate from documents kept at the bridge's address. Pick one and stay there.
-- **Do not expose the bridge to the internet.** The pairing code is in the link, and the
-  link goes to printers.
+- **Do not expose the bridge to the internet.** Anyone who can reach it can use your
+  printers — there is no pairing code, the network itself is the boundary.
