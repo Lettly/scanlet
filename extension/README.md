@@ -91,6 +91,11 @@ That refuses to write a zip that would be rejected: wrong manifest version, a mi
 or mis-sized icon, a missing content script, or any remotely hosted code (`eval`,
 `new Function`, a remote `fetch` or `import`).
 
+Chrome updates publish themselves once the item exists: push an `extension-v<version>`
+tag and `.github/workflows/publish-extension.yml` uploads and submits it for review.
+The five store secrets it needs, and the manual first-submission steps, are in
+`STORE.md`.
+
 ## Limitations
 
 - **Chrome and Edge only.** Firefox has no equivalent of the optional-host-permission

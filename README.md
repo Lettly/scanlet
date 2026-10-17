@@ -244,6 +244,11 @@ exactly how the [live demo](https://lettly.github.io/scanlet/) is published. The
 included `.github/workflows/ci.yml` runs the tests on every push; it does not need to
 touch Pages.
 
+The extension is packaged in CI too: `.github/workflows/publish-extension.yml` uploads
+and submits it to the Chrome Web Store when an `extension-v<version>` tag is pushed.
+[`extension/STORE.md`](extension/STORE.md) lists the secrets it needs and the manual
+first submission; updates need no clicking.
+
 ## Test it
 
 ```sh
@@ -328,7 +333,8 @@ assets/test/            Node tests for the frontend helper modules
 vendor/                 the vendored libraries (see docs/self-contained.md)
 icons/, tools/          generated PNG icons, the icon generator, and the scripts:
                         tools/vendor.mjs, tools/serve.mjs, tools/build-extension.mjs,
-                        tools/find-bridge.mjs
+                        tools/publish-extension.mjs, tools/find-bridge.mjs
+.github/workflows/      ci.yml (tests) and publish-extension.yml (Chrome Web Store)
 ```
 
 A page is two things: the **untouched original blob** in IndexedDB, and a small **edit

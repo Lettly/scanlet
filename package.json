@@ -22,6 +22,8 @@
     "find-bridge": "node tools/find-bridge.mjs",
     "build:extension": "node tools/build-extension.mjs",
     "check:extension": "node tools/build-extension.mjs --check",
+    "publish:extension": "node tools/publish-extension.mjs",
+    "publish:extension:check": "node tools/publish-extension.mjs --dry-run",
     "vendor": "node tools/vendor.mjs",
     "check:vendor": "node tools/vendor.mjs --check",
     "serve": "node tools/serve.mjs",

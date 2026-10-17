@@ -37,6 +37,9 @@ jobs:
       - name: The extension package is submittable
         run: node tools/build-extension.mjs --check
 
+      - name: The publish tool runs without credentials (dry run)
+        run: node tools/publish-extension.mjs --dry-run
+
       - name: vendor/ matches its manifest
         run: node tools/vendor.mjs --check
 

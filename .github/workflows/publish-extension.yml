@@ -1,0 +1,46 @@
+name: Publish extension
+
+# Publishing is deliberate, never a side effect of an ordinary push: it runs when
+# an `extension-vX.Y.Z` tag is pushed, or by hand from the Actions tab. The tag
+# must name the version in extension/manifest.json, so a forgotten bump fails
+# here instead of re-publishing the previous version.
+on:
+  workflow_dispatch:
+    inputs:
+      upload_only:
+        description: Upload the package but do not submit it for review
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'extension-v*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Validate the package
+        run: node tools/build-extension.mjs --check
+
+      - name: Extension tests
+        run: node extension/test/escl.test.mjs && node extension/test/messaging.test.mjs
+
+      - name: Upload and submit for review
+        env:
+          CWS_PUBLISHER_ID: ${{ secrets.CWS_PUBLISHER_ID }}
+          CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+          # Empty on a tag push; set by the manual trigger's checkbox.
+          CWS_UPLOAD_ONLY: ${{ inputs.upload_only }}
+        run: node tools/publish-extension.mjs

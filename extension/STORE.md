@@ -10,9 +10,10 @@ Artifact: **`dist/scanlet-extension-1.0.0.zip`** — build it with
 
 ## What only you can do
 
-I cannot submit this for you: both stores need an account that proves who is
-publishing, and Chrome requires a one-time payment. Everything up to the upload
-button is done.
+The **first** submission is manual: both stores need an account that proves who is
+publishing, Chrome requires a one-time payment, and the item has to exist before the
+API can update it. After that, Chrome updates publish themselves from CI — see
+[Publishing from CI](#publishing-from-ci) below.
 
 **Chrome Web Store**
 
@@ -155,12 +156,43 @@ real screenshots convert better. Take them like this:
 
 ## Versioning
 
-The version in `manifest.json` must increase with every upload. After a change:
+The version in `manifest.json` must increase with every upload. Check the package
+before shipping it:
 
 ```sh
 node tools/build-extension.mjs     # validates, then writes dist/scanlet-extension-<version>.zip
 node extension/test/messaging.test.mjs
 ```
+
+## Publishing from CI
+
+`.github/workflows/publish-extension.yml` keeps the store item up to date. It runs when
+an **`extension-vX.Y.Z` tag** is pushed — where `X.Y.Z` is the version in
+`manifest.json` — or by hand from the **Actions** tab (with an *upload only* checkbox to
+stage a build without submitting it). It builds and validates the package, runs the
+extension tests, then uploads it and submits it for review through
+[`tools/publish-extension.mjs`](../tools/publish-extension.mjs).
+
+It needs five repository secrets (**Settings → Secrets and variables → Actions**), all
+from the OAuth setup above:
+
+| Secret | Where it comes from |
+|---|---|
+| `CWS_PUBLISHER_ID` | Developer Dashboard → **Publisher → Settings** |
+| `CWS_EXTENSION_ID` | the item's ID in the dashboard, or the number in its store URL |
+| `CWS_CLIENT_ID` | the OAuth client (Google Cloud Console → **Credentials**) |
+| `CWS_CLIENT_SECRET` | the same client |
+| `CWS_REFRESH_TOKEN` | the OAuth Playground step above |
+
+The tool refuses to publish when a release tag and the manifest disagree, so a
+forgotten version bump fails the run instead of re-publishing the previous build. Try
+it locally without touching the store:
+
+```sh
+node tools/publish-extension.mjs --dry-run    # builds and prints; sends nothing
+```
+
+Edge has no equivalent upload API wired here, so Edge updates stay manual for now.
 
 ## Self-hosting Scanlet
 
