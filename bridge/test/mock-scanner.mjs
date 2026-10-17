@@ -176,7 +176,7 @@ function buildPdf(index, width = 595, height = 842) {
   return Buffer.from(pdf, 'latin1');
 }
 
-export function createMockScanner({ pages = 3, delayMs = 0, render = false, pdf = true } = {}) {
+export function createMockScanner({ pages = 3, delayMs = 0, render = false, pdf = true, faulty = false } = {}) {
   let nextJob = 1;
   const jobs = new Map();
 
@@ -190,6 +190,14 @@ export function createMockScanner({ pages = 3, delayMs = 0, render = false, pdf 
     }
 
     if (path === '/eSCL/ScanJobs' && request.method === 'POST') {
+      // A device that describes itself perfectly and then fails the job — the
+      // shape of a printer that has gone to sleep, and the one that used to take
+      // the whole bridge down with it.
+      if (faulty) {
+        request.resume();
+        response.writeHead(500, { 'content-type': 'text/plain' });
+        return response.end('scanner busy');
+      }
       const chunks = [];
       request.on('data', (c) => chunks.push(c));
       request.on('end', () => {

@@ -91,6 +91,18 @@ async function main() {
   try {
     await ready;
 
+    await check('the add-on version and the image’s build stamp agree', () => {
+      // The stamp is what stops Docker reusing a cached download of the app, so
+      // forgetting to bump it ships the previous app while claiming a new version.
+      const config = fs.readFileSync(path.join(REPO, 'scanlet_bridge', 'config.yaml'), 'utf8');
+      const dockerfile = fs.readFileSync(path.join(REPO, 'scanlet_bridge', 'Dockerfile'), 'utf8');
+      const version = /^version:\s*"?([0-9.]+)"?/m.exec(config)?.[1];
+      const stamp = /^ARG SCANLET_BUILD=([0-9.]+)/m.exec(dockerfile)?.[1];
+      assert.ok(version, 'config.yaml should declare a version');
+      assert.equal(stamp, version, 'bump ARG SCANLET_BUILD with the add-on version');
+      assert.match(dockerfile, /^ARG SCANLET_REF=/m, 'the app ref should be an explicit argument');
+    });
+
     await check('the add-on starts both listeners', () => {
       assert.match(output.join(''), new RegExp(`network API on port ${lanPort}`));
       assert.match(output.join(''), new RegExp(`panel on port ${ingressPort}`));

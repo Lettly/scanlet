@@ -414,6 +414,30 @@ async function testSingleUrl() {
       assert.match(body.error, /No eSCL scanner answered/);
     });
 
+    // Regression: `return serveSingleScan(...)` used to sit inside its own
+    // try/catch, and returning a promise from an async function awaits it *after*
+    // the try block has exited — so a rejection escaped as an unhandled rejection
+    // and killed the process, taking every other request with it. A device that
+    // answers the probe and then fails the job is exactly how that happened.
+    const faultyDevice = createMockScanner({ pages: 1, faulty: true });
+    const faultyPort = await listen(faultyDevice);
+    try {
+      const faulty = await fetch(`${url}/scan.pdf?printer=127.0.0.1:${faultyPort}`);
+      await check('a device that fails mid-scan is an error, not a dead server', async () => {
+        assert.equal(faulty.status, 502);
+        const body = await faulty.json();
+        assert.match(body.error, /rejected the job/);
+      });
+
+      await check('the bridge still answers after a scan fails', async () => {
+        const response = await fetch(`${url}/health`);
+        assert.equal(response.status, 200);
+        await response.json();
+      });
+    } finally {
+      faultyDevice.close();
+    }
+
     await check('the bridge still answers after that failure', async () => {
       const response = await fetch(`${url}/health`);
       assert.equal(response.status, 200);
