@@ -21,6 +21,14 @@ const CAPS_TTL = 5 * 60 * 1000;
 
 const capsCache = new Map(); // printer id → { at, caps }
 
+/* ─────────────────────────── entry points ─────────────────────────── */
+
+// The toolbar button has no popup: clicking it is the obvious way to reach the
+// one thing the extension asks you to do, which is grant network access.
+chrome.action?.onClicked?.addListener?.(() => {
+  chrome.runtime.openOptionsPage?.();
+});
+
 /* ─────────────────────────── messaging ─────────────────────────── */
 
 chrome.runtime.onMessage.addListener((message, sender) => {
@@ -28,10 +36,12 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   const tabId = sender.tab?.id;
   if (tabId === undefined) return false;
 
-  // Reply through the tab, so one request can yield many messages.
+  // Reply through the tab, so one request can yield many messages. `requestId`
+  // correlates the answer; `printerId` names a device. Keeping them as separate
+  // fields matters: one field for both made replies unmatchable.
   const reply = (payload) =>
     chrome.tabs
-      .sendMessage(tabId, { source: TO_PAGE, id: message.id, ...payload })
+      .sendMessage(tabId, { source: TO_PAGE, requestId: message.requestId, ...payload })
       .catch(() => {
         /* the page navigated away */
       });
@@ -49,7 +59,7 @@ async function handle(message, reply) {
       return discover(reply, message);
 
     case 'capabilities':
-      return sendCapabilities(reply, message.id);
+      return sendCapabilities(reply, message.printerId);
 
     case 'probe-address': {
       const { printer, caps } = await probeAddress(message.address);
@@ -124,8 +134,8 @@ async function sendCapabilities(reply, id) {
 }
 
 async function runScan(reply, message) {
-  const printer = parsePrinterId(message.id);
-  let caps = capsCache.get(message.id)?.caps;
+  const printer = parsePrinterId(message.printerId);
+  let caps = capsCache.get(message.printerId)?.caps;
   if (!caps) caps = await capabilities(printer).catch(() => ({}));
 
   let count = 0;

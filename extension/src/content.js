@@ -16,7 +16,10 @@ window.addEventListener('message', (event) => {
   if (!data || typeof data !== 'object' || data.source !== FROM_PAGE) return;
 
   if (data.type === 'ping') {
-    window.postMessage({ source: TO_PAGE, type: 'pong', id: data.id, version: VERSION }, location.origin);
+    window.postMessage(
+      { source: TO_PAGE, type: 'pong', requestId: data.requestId, version: VERSION },
+      location.origin,
+    );
     return;
   }
 
@@ -27,7 +30,12 @@ window.addEventListener('message', (event) => {
   } catch {
     // The extension was reloaded or removed; tell the page so it can fall back.
     window.postMessage(
-      { source: TO_PAGE, id: data.id, type: 'error', error: 'The Scanlet extension is not available.' },
+      {
+        source: TO_PAGE,
+        requestId: data.requestId,
+        type: 'error',
+        error: 'The Scanlet extension is not available.',
+      },
       location.origin,
     );
   }

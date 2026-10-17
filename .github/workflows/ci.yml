@@ -25,6 +25,12 @@ jobs:
       - name: Extension printer-layer tests
         run: node extension/test/escl.test.mjs
 
+      - name: Extension message-protocol tests
+        run: node extension/test/messaging.test.mjs
+
+      - name: The extension package is submittable
+        run: node tools/build-extension.mjs --check
+
       - name: vendor/ matches its manifest
         run: node tools/vendor.mjs --check
 

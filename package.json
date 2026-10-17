@@ -14,9 +14,13 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "node bridge/test/bridge.test.mjs && node extension/test/escl.test.mjs",
+    "test": "node bridge/test/bridge.test.mjs && node extension/test/escl.test.mjs && node extension/test/messaging.test.mjs",
     "test:bridge": "node bridge/test/bridge.test.mjs",
-    "test:extension": "node extension/test/escl.test.mjs",
+    "test:extension": "node extension/test/escl.test.mjs && node extension/test/messaging.test.mjs",
+    "build:extension": "node tools/build-extension.mjs",
+    "check:extension": "node tools/build-extension.mjs --check",
+    "vendor": "node tools/vendor.mjs",
+    "check:vendor": "node tools/vendor.mjs --check",
     "serve": "python3 -m http.server 8899",
     "bridge": "node bridge/scanlet-bridge.mjs",
     "bridge:lan": "node bridge/scanlet-bridge.mjs --lan",

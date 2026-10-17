@@ -78,12 +78,21 @@ choices below exist.
 `extension/` is a Chrome/Edge extension. An extension *can* read a printer's reply
 when you grant it host access, so the plugin replaces the local server entirely:
 
-1. `chrome://extensions` → Developer mode → **Load unpacked** → `extension/`.
-2. Options → **Grant network access**.
-3. In Scanlet: **Scanner → Browser extension**.
+1. Download `scanlet-extension-1.0.0.zip` from the
+   [latest release](../../releases/latest) and unzip it, or use the `extension/`
+   folder as-is.
+2. `chrome://extensions` → Developer mode → **Load unpacked** → the unzipped folder.
+3. Options (the toolbar button opens them) → **Grant network access**.
+4. In Scanlet: **Scanner → Browser extension**.
 
 Discovery is a sweep of the `/24` prefixes you list, because an extension has no mDNS
 socket. See [`extension/README.md`](extension/README.md) for the permission model.
+
+It is packaged and ready to submit, but **not yet published to either store** — the
+stores need a developer account and, for Chrome, a one-time fee, so that last click is
+yours. [`extension/STORE.md`](extension/STORE.md) holds the listing copy, the permission
+justifications and the privacy-tab answers; `node tools/build-extension.mjs` produces a
+validated zip and refuses to write one that would be rejected.
 
 ### The bridge
 

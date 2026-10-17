@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Scanlet Bridge — privacy policy</title>
+<style>
+  :root { color-scheme: light dark; --brand: #4f46e5; }
+  body {
+    margin: 0 auto; padding: 40px 20px 80px; max-width: 720px;
+    font: 16px/1.65 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h2 { font-size: 17px; margin: 32px 0 8px; }
+  p, li { color: color-mix(in srgb, currentColor 88%, transparent); }
+  .lead { font-size: 17px; }
+  .updated { color: color-mix(in srgb, currentColor 55%, transparent); font-size: 14px; margin: 0 0 28px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em;
+         background: color-mix(in srgb, currentColor 8%, transparent); padding: 1px 5px; border-radius: 5px; }
+  .box { background: color-mix(in srgb, currentColor 5%, transparent); border-radius: 12px; padding: 16px 20px; margin: 24px 0; }
+  .box p { margin: 6px 0; }
+  a { color: var(--brand); }
+  footer { margin-top: 40px; font-size: 14px; color: color-mix(in srgb, currentColor 55%, transparent); }
+</style>
+</head>
+<body>
+
+<h1>Scanlet Bridge — privacy policy</h1>
+<p class="updated">Last updated 17 October 2026</p>
+
+<p class="lead">Scanlet Bridge is a browser extension that lets the Scanlet web app talk to
+printers on your own network. It has no server, no account, no analytics and no telemetry.
+This page says exactly what it does and does not do with your information.</p>
+
+<div class="box">
+  <p><strong>In one sentence:</strong> the extension stores two settings you type, and
+  otherwise only passes scan data between your printer and your own screen.</p>
+</div>
+
+<h2>What it stores</h2>
+<p>Two values, on your device, in the browser's extension storage
+(<code>chrome.storage.local</code>):</p>
+<ul>
+  <li>the network prefixes you asked it to search, such as <code>192.168.1</code>;</li>
+  <li>the port to ask devices on, normally <code>80</code>.</li>
+</ul>
+<p>Nothing else is persisted. Removing the extension removes both. They are never
+transmitted anywhere.</p>
+
+<h2>What it accesses</h2>
+<p>With your permission, the extension makes HTTP requests to addresses on your local
+network to find printers that speak the driverless eSCL/AirScan protocol, and to run a
+scan when you ask for one. The permission is optional: it is requested only when you
+press <em>Grant network access</em> or add a specific device by address, and you can
+revoke it at any time from the extension's options page. Before you grant it, the
+extension does nothing at all.</p>
+
+<p>Scan images are fetched from your printer and passed through the extension to the
+Scanlet page you have open. They are held only in memory for that handover. They are not
+written to disk by the extension, not logged, and not sent to any other party.</p>
+
+<h2>What it does not do</h2>
+<ul>
+  <li>It does not collect personal information — no names, no email, no identifiers.</li>
+  <li>It does not send anything to a server operated by us or anyone else. There is no
+      Scanlet server to send it to.</li>
+  <li>It does not use analytics, crash reporting, advertising or tracking of any kind.</li>
+  <li>It does not read, modify or transmit the content of the pages you visit. Its
+      content script does one thing: relay messages between the Scanlet page and the
+      extension.</li>
+  <li>It does not download or execute remote code. Every line it runs ships inside the
+      extension package.</li>
+  <li>It does not sell or transfer data to third parties, and has nothing to sell.</li>
+</ul>
+
+<h2>Where the extension runs</h2>
+<p>The relay between the page and the extension is injected only on the published
+Scanlet app (<code>https://lettly.github.io/scanlet/</code>) and on loopback addresses
+(<code>localhost</code>, <code>127.0.0.1</code>), where a locally run bridge may serve
+the same app. No other website is touched.</p>
+
+<h2>The Scanlet web app is separate</h2>
+<p>Scanlet itself is a normal web app you open in a tab. The documents you build there —
+page images, recognised text, exported PDFs — are stored by your browser on that site's
+origin, and are not visible to this extension. Clearing that site's data deletes them.
+This extension never reads them.</p>
+
+<h2>Children</h2>
+<p>The extension is a general-purpose tool. It collects no data from anyone, of any age.</p>
+
+<h2>Changes</h2>
+<p>If this policy changes, the date at the top changes with it, and the change is visible
+in the public repository's history at
+<a href="https://github.com/Lettly/scanlet/commits/main/extension/privacy.html">github.com/Lettly/scanlet</a>.</p>
+
+<h2>Contact</h2>
+<p>Questions or corrections: open an issue at
+<a href="https://github.com/Lettly/scanlet/issues">github.com/Lettly/scanlet/issues</a>.</p>
+
+<footer>
+  Scanlet Bridge is free software under the MIT licence.
+  <a href="./">Source and documentation</a>.
+</footer>
+
+</body>
+</html>

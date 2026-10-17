@@ -287,14 +287,16 @@ export class ExtensionClient {
       const data = event.data;
       if (data?.source !== EXT_REPLY) return;
       this.listeners.forEach((fn) => fn(data));
-      if (!data.id) return;
-      const entry = this.pending.get(data.id);
+      // `requestId` correlates a reply; `printerId` names a device. They used to
+      // share one field, which made every reply unmatchable.
+      if (!data.requestId) return;
+      const entry = this.pending.get(data.requestId);
       if (!entry) return;
       if (data.type === 'error') {
-        this.pending.delete(data.id);
+        this.pending.delete(data.requestId);
         entry.reject(new Error(data.error || 'The extension failed.'));
       } else if (data.type === 'done') {
-        this.pending.delete(data.id);
+        this.pending.delete(data.requestId);
         entry.resolve(entry.result);
       } else if (entry.onEvent) {
         entry.onEvent(data);
@@ -311,13 +313,13 @@ export class ExtensionClient {
   }
 
   send(type, payload = {}, { onEvent } = {}) {
-    const id = `c${++this.serial}`;
+    const requestId = `c${++this.serial}`;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject, onEvent, result: [] });
-      window.postMessage({ source: EXT_SOURCE, type, id, ...payload }, location.origin);
+      this.pending.set(requestId, { resolve, reject, onEvent, result: [] });
+      window.postMessage({ source: EXT_SOURCE, type, requestId, ...payload }, location.origin);
       setTimeout(() => {
-        if (!this.pending.has(id)) return;
-        this.pending.delete(id);
+        if (!this.pending.has(requestId)) return;
+        this.pending.delete(requestId);
         reject(new Error('The extension did not answer in time.'));
       }, this.timeout);
     });
@@ -342,8 +344,8 @@ export class ExtensionClient {
     return printers;
   }
 
-  capabilities(id) {
-    return this.send('capabilities', { id }).then((result) => result?.caps || result);
+  capabilities(printerId) {
+    return this.send('capabilities', { printerId }).then((result) => result?.caps || result);
   }
 
   probeAddress(address) {
@@ -351,9 +353,9 @@ export class ExtensionClient {
   }
 
   /** Scan and decode each page to a Blob as it arrives. */
-  async scan(id, options = {}, { onPage, onProgress } = {}) {
+  async scan(printerId, options = {}, { onPage, onProgress } = {}) {
     const pages = [];
-    await this.send('scan', { id, options }, {
+    await this.send('scan', { printerId, options }, {
       onEvent: (data) => {
         if (data.type !== 'page') return;
         const bytes = base64ToBytes(data.data);

@@ -20,3 +20,6 @@ scanstation/
 
 # local tooling left-overs
 .openchamber/
+
+# build output
+dist/

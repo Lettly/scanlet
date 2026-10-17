@@ -62,13 +62,34 @@ one huge blob, so a long document never hits a message size limit.
 ## Tests
 
 ```sh
-node extension/test/escl.test.mjs
+node extension/test/escl.test.mjs        # the printer layer, against a mock scanner
+node extension/test/messaging.test.mjs   # the worker's message protocol
 ```
 
 Everything that talks to a printer lives in `escl.js` and `discovery.js`, which
 depend only on `fetch` — so the tests drive them against the same mock scanner the
 bridge uses, with no browser in the loop. That covers printer-id round-trips,
 capability parsing, the scan region arithmetic, ADF streaming, probing and progress.
+
+`messaging.test.mjs` goes further and covers the wiring: it puts a fake `chrome` in
+front of the real `src/worker.js`, calls the listener that module registers, and checks
+the whole protocol — ping, unknown requests, add-by-address, capabilities, a streamed
+scan, the permission gate, and a sweep that finds nothing. It exists because it caught
+a real bug: the request-correlation id and the printer id shared one field, so
+`capabilities` and `scan` never matched a reply and hung until their timeout.
+
+## Publishing
+
+`STORE.md` in this folder has the listing copy, the permission justifications and the
+privacy-tab answers, plus the upload steps for both stores. The package is built with:
+
+```sh
+node tools/build-extension.mjs        # validates, then writes dist/scanlet-extension-<version>.zip
+```
+
+That refuses to write a zip that would be rejected: wrong manifest version, a missing
+or mis-sized icon, a missing content script, or any remotely hosted code (`eval`,
+`new Function`, a remote `fetch` or `import`).
 
 ## Limitations
 
