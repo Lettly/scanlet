@@ -2194,7 +2194,7 @@ async function updateStorageLabel() {
 
 function openAbout() {
   $('#about-versions').textContent =
-    `PDF.js ${pdfs.PDFJS_VERSION} · pdf-lib ${pdfs.PDFLIB_VERSION} · Tesseract.js 5.1.1 · JSZip 3.10.1`;
+    `PDF.js ${pdfs.PDFJS_VERSION} · pdf-lib ${pdfs.PDFLIB_VERSION} · Tesseract.js 5.1.1 · JSZip 3.10.1 · qrcode-generator 1.4.4`;
   openModal($('#modal-about'));
 }
 
