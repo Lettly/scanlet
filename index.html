@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Scanlet — private, client-side document scanner</title>
+<meta name="description" content="Scan, clean up, OCR and assemble PDFs entirely in your browser. Nothing is ever uploaded." />
+<meta name="theme-color" content="#4f46e5" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="icon" href="icons/favicon-32.png" sizes="32x32" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+<link rel="stylesheet" href="assets/app.css" />
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js" defer></script>
+<script type="module" src="assets/js/main.js"></script>
+</head>
+<body>
+
+<header class="appbar">
+  <button class="icon-btn menu-btn" id="btn-menu" title="Documents" aria-label="Toggle document list">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+  </button>
+
+  <div class="brand">
+    <img src="icons/icon-192.png" alt="" width="28" height="28" />
+    <div class="brand-text">
+      <strong>Scanlet</strong>
+      <span class="badge-private" title="Files never leave this device">100% local</span>
+    </div>
+  </div>
+
+  <div class="doc-title-wrap">
+    <input id="doc-title" class="doc-title" value="Untitled document" aria-label="Document name" spellcheck="false" />
+    <span class="muted" id="doc-meta"></span>
+  </div>
+
+  <div class="appbar-actions">
+    <button class="btn" id="act-import" title="Import images or PDFs">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"/></svg>
+      Import
+    </button>
+    <button class="btn" id="act-camera" title="Capture with this device's camera">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 8a2 2 0 012-2h2l1.5-2h7L17 6h2a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><circle cx="12" cy="12.5" r="3.5"/></svg>
+      Camera
+    </button>
+    <button class="btn" id="act-scanner" title="Scan from a network printer or ADF">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9V4h12v5M6 18H5a2 2 0 01-2-2v-5a2 2 0 012-2h14a2 2 0 012 2v5a2 2 0 01-2 2h-1M6 15h12v6H6z"/></svg>
+      Scanner
+    </button>
+    <span class="spacer"></span>
+    <button class="btn primary" id="act-export">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V8m0 0l-4 4m4-4l4 4M4 4h16"/></svg>
+      Export PDF
+    </button>
+    <button class="icon-btn" id="btn-app-menu" title="More" aria-haspopup="menu" aria-expanded="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg>
+    </button>
+  </div>
+
+  <div class="menu" id="app-menu" role="menu" hidden>
+    <button role="menuitem" data-menu="save-project">Download project bundle…</button>
+    <button role="menuitem" data-menu="open-project">Open project bundle…</button>
+    <button role="menuitem" data-menu="export-images">Export pages as images…</button>
+    <hr />
+    <button role="menuitem" data-menu="ocr-all">Run OCR on all pages</button>
+    <button role="menuitem" data-menu="straighten-all">Auto-deskew all pages</button>
+    <button role="menuitem" data-menu="flatten-all">Apply &amp; bake edits on all pages</button>
+    <hr />
+    <button role="menuitem" data-menu="settings">Export defaults…</button>
+    <button role="menuitem" data-menu="about">About Scanlet</button>
+  </div>
+</header>
+
+<div class="layout">
+
+  <aside class="rail" id="rail">
+    <div class="rail-head">Documents</div>
+    <div class="doc-list" id="doc-list"></div>
+    <button class="btn ghost block" id="btn-new-doc">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      New document
+    </button>
+    <div class="rail-foot">
+      <button class="btn ghost block" id="btn-storage" title="How much is stored locally">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7c0-1.7 3.6-3 8-3s8 1.3 8 3-3.6 3-8 3-8-1.3-8-3zM4 7v10c0 1.7 3.6 3 8 3s8-1.3 8-3V7"/></svg>
+        <span id="storage-label">Local storage</span>
+      </button>
+    </div>
+  </aside>
+
+  <main class="workspace" id="workspace">
+    <div class="empty" id="empty-state">
+      <div class="empty-art">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9V4h12v5M6 18H5a2 2 0 01-2-2v-5a2 2 0 012-2h14a2 2 0 012 2v5a2 2 0 01-2 2h-1M6 15h12v6H6z"/></svg>
+      </div>
+      <h2>Start a document</h2>
+      <p>Import images or PDFs, capture pages with the camera, or scan straight from a network printer. Everything is processed on this device.</p>
+      <div class="empty-actions">
+        <button class="btn primary" data-empty="import">Import files</button>
+        <button class="btn" data-empty="camera">Use camera</button>
+        <button class="btn" data-empty="scanner">Scan a printer</button>
+      </div>
+      <p class="drop-hint">…or drop files anywhere on this page.</p>
+    </div>
+
+    <div class="page-grid" id="pages" hidden></div>
+    <div class="dropzone" id="dropzone" hidden><span>Drop to add pages</span></div>
+  </main>
+
+  <aside class="inspector" id="inspector" hidden>
+    <div class="insp-head">
+      <strong id="sel-count">No pages selected</strong>
+      <button class="icon-btn" id="btn-clear-sel" title="Clear selection" aria-label="Clear selection">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+
+    <section class="insp-group" data-when="selection">
+      <div class="insp-label">Transform</div>
+      <div class="btn-row">
+        <button class="btn sm" id="btn-rotate-l" title="Rotate left ( [ )">⟲ 90°</button>
+        <button class="btn sm" id="btn-rotate-r" title="Rotate right ( ] )">⟳ 90°</button>
+        <button class="btn sm" id="btn-flip" title="Flip horizontally">⇋ Flip</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn sm" id="btn-deskew" title="Auto-straighten">Deskew</button>
+        <button class="btn sm" id="btn-crop">Crop &amp; corners…</button>
+      </div>
+    </section>
+
+    <section class="insp-group" data-when="selection">
+      <div class="insp-label">Enhancement</div>
+      <div class="seg" id="filter-seg" role="radiogroup" aria-label="Enhancement preset">
+        <button role="radio" data-filter="original" aria-checked="true">Original</button>
+        <button role="radio" data-filter="enhance">Enhance</button>
+        <button role="radio" data-filter="gray">Gray</button>
+        <button role="radio" data-filter="bw">B&amp;W</button>
+        <button role="radio" data-filter="magic">Magic</button>
+      </div>
+      <label class="slider" title="Brightness">
+        <span>Brightness</span>
+        <input type="range" id="adj-brightness" min="-60" max="60" value="0" step="1" />
+      </label>
+      <label class="slider" title="Contrast">
+        <span>Contrast</span>
+        <input type="range" id="adj-contrast" min="-60" max="60" value="0" step="1" />
+      </label>
+      <label class="slider" title="Saturation">
+        <span>Saturation</span>
+        <input type="range" id="adj-saturation" min="-100" max="100" value="0" step="1" />
+      </label>
+      <label class="check">
+        <input type="checkbox" id="adj-autocrop" />
+        <span>Trim borders automatically on export</span>
+      </label>
+    </section>
+
+    <section class="insp-group" data-when="selection">
+      <div class="insp-label">Page actions</div>
+      <div class="btn-row">
+        <button class="btn sm" id="btn-duplicate">Duplicate</button>
+        <button class="btn sm" id="btn-move-up">Move ↑</button>
+        <button class="btn sm" id="btn-move-down">Move ↓</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn sm" id="btn-split">Split here</button>
+        <button class="btn sm" id="btn-extract">To new doc</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn sm" id="btn-ocr">OCR pages</button>
+        <button class="btn sm" id="btn-ocr-text">Show text…</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn sm danger" id="btn-delete">Delete</button>
+      </div>
+    </section>
+
+    <section class="insp-group" data-when="selection">
+      <div class="insp-label">Rotate freely</div>
+      <label class="slider">
+        <span>Angle</span>
+        <input type="range" id="adj-angle" min="-15" max="15" value="0" step="0.25" />
+      </label>
+    </section>
+  </aside>
+</div>
+
+<!-- ─────────────────────────  capture  ───────────────────────── -->
+<div class="modal" id="modal-capture" hidden>
+  <div class="sheet wide">
+    <header class="sheet-head">
+      <strong>Camera capture</strong>
+      <div class="sheet-head-actions">
+        <select id="cam-device" class="input" title="Camera"></select>
+        <select id="cam-res" class="input" title="Resolution">
+          <option value="1280">720p</option>
+          <option value="1920" selected>1080p</option>
+          <option value="2560">1440p</option>
+          <option value="3840">4K</option>
+        </select>
+        <label class="check inline"><input type="checkbox" id="cam-autoshot" /> <span>Auto-shoot</span></label>
+        <button class="icon-btn" data-close title="Close" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+    </header>
+    <div class="sheet-body">
+      <div class="cam-stage">
+        <video id="cam-video" playsinline muted></video>
+        <canvas id="cam-overlay" class="cam-overlay" aria-hidden="true"></canvas>
+        <div class="cam-guide" aria-hidden="true"></div>
+        <div class="cam-flash" id="cam-flash"></div>
+      </div>
+      <div class="cam-side">
+        <div class="field">
+          <label for="cam-preset">Enhancement for new captures</label>
+          <select id="cam-preset" class="input">
+            <option value="enhance">Enhance</option>
+            <option value="original">Original</option>
+            <option value="gray">Grayscale</option>
+            <option value="bw">Black &amp; white</option>
+            <option value="magic">Magic (shadow removal)</option>
+          </select>
+        </div>
+        <label class="check"><input type="checkbox" id="cam-crop" checked /> <span>Detect page edges</span></label>
+        <label class="check"><input type="checkbox" id="cam-continuous" checked /> <span>Keep camera open for multiple pages</span></label>
+        <div class="cam-count"><span id="cam-shot-count">0</span> captured</div>
+        <div class="cam-strip" id="cam-strip"></div>
+      </div>
+    </div>
+    <footer class="sheet-foot">
+      <button class="btn" data-close>Cancel</button>
+      <span class="spacer"></span>
+      <button class="btn" id="cam-review">Review shots</button>
+      <button class="btn primary" id="cam-shoot">Capture</button>
+      <button class="btn primary" id="cam-done" hidden>Add to document</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ─────────────────────────  page editor  ───────────────────────── -->
+<div class="modal" id="modal-editor" hidden>
+  <div class="sheet wide">
+    <header class="sheet-head">
+      <strong>Adjust page</strong>
+      <div class="sheet-head-actions">
+        <button class="btn sm" id="ed-auto-crop">Auto-detect edges</button>
+        <button class="btn sm" id="ed-reset">Reset corners</button>
+        <button class="icon-btn" data-close title="Close" aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+    </header>
+    <div class="sheet-body editor-body">
+      <div class="ed-stage" id="ed-stage">
+        <canvas id="ed-canvas"></canvas>
+        <div class="ed-overlay" id="ed-overlay"></div>
+      </div>
+      <div class="ed-side">
+        <div class="field">
+          <label>Enhancement</label>
+          <div class="seg vertical" id="ed-filter-seg" role="radiogroup">
+            <button role="radio" data-filter="original" aria-checked="true">Original</button>
+            <button role="radio" data-filter="enhance">Enhance</button>
+            <button role="radio" data-filter="gray">Grayscale</button>
+            <button role="radio" data-filter="bw">Black &amp; white</button>
+            <button role="radio" data-filter="magic">Magic (shadow removal)</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>Rotate <output id="ed-angle-out">0°</output></label>
+          <input type="range" id="ed-angle" min="-180" max="180" value="0" step="0.5" />
+          <div class="btn-row">
+            <button class="btn sm" id="ed-rot-l">⟲ 90°</button>
+            <button class="btn sm" id="ed-rot-r">⟳ 90°</button>
+            <button class="btn sm" id="ed-flip">Flip</button>
+            <button class="btn sm" id="ed-deskew">Deskew</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>Output</label>
+          <div class="btn-row">
+            <button class="btn sm" id="ed-apply-copy">Apply to copy</button>
+            <button class="btn sm primary" id="ed-apply">Apply</button>
+          </div>
+          <p class="hint">Applying keeps the original so nothing is lost — use “Revert” in the page menu to undo.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────────────  scanner  ───────────────────────── -->
+<div class="modal" id="modal-scanner" hidden>
+  <div class="sheet">
+    <header class="sheet-head">
+      <strong>Scan from a printer</strong>
+      <button class="icon-btn" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <div class="sheet-body">
+      <div class="status-line">
+        <span class="dot" id="bridge-dot"></span>
+        <span id="bridge-status">Looking for a local scanning bridge…</span>
+      </div>
+
+      <p class="hint">
+        Browsers cannot open a socket to a printer, so Scanlet talks to a small bridge running on
+        your own machine. Without it, you can still import files or use the camera — and you can add
+        printers by address below.
+      </p>
+
+      <div class="field-row">
+        <div class="field grow">
+          <label for="bridge-url">Bridge address</label>
+          <input class="input" id="bridge-url" placeholder="http://127.0.0.1:8787" spellcheck="false" />
+        </div>
+        <button class="btn" id="bridge-connect">Connect</button>
+      </div>
+
+      <div class="field" id="btn-bridge-help-wrap">
+        <button class="btn ghost" id="btn-bridge-help">How do I run the bridge?</button>
+      </div>
+
+      <div class="field" id="printer-list-wrap" hidden>
+        <label>Discovered devices</label>
+        <div class="printer-list" id="printer-list"></div>
+      </div>
+
+      <div class="field" id="manual-printer-wrap">
+        <label for="printer-addr">Or enter a device address (eSCL / AirScan)</label>
+        <div class="field-row">
+          <input class="input grow" id="printer-addr" placeholder="192.168.1.42:80" spellcheck="false" />
+          <button class="btn" id="printer-probe">Probe</button>
+        </div>
+      </div>
+
+      <div class="field" id="scan-options" hidden>
+        <label>Scan settings</label>
+        <div class="grid-2">
+          <select class="input" id="scan-source"></select>
+          <select class="input" id="scan-color">
+            <option value="RGB24">Color</option>
+            <option value="Grayscale8">Grayscale</option>
+            <option value="BlackAndWhite1">Black &amp; white</option>
+          </select>
+          <select class="input" id="scan-res">
+            <option value="75">75 dpi</option>
+            <option value="150">150 dpi</option>
+            <option value="200" selected>200 dpi</option>
+            <option value="300">300 dpi</option>
+            <option value="400">400 dpi</option>
+            <option value="600">600 dpi</option>
+          </select>
+          <select class="input" id="scan-duplex">
+            <option value="false">Single sided</option>
+            <option value="true">Duplex</option>
+          </select>
+          <select class="input" id="scan-size">
+            <option value="A4">A4</option>
+            <option value="Letter">Letter</option>
+            <option value="Legal">Legal</option>
+            <option value="">Max / auto</option>
+          </select>
+          <select class="input" id="scan-format">
+            <option value="image/jpeg">JPEG</option>
+            <option value="application/pdf">PDF</option>
+            <option value="image/png">PNG</option>
+          </select>
+        </div>
+        <div class="btn-row">
+          <button class="btn primary" id="scan-start">Scan</button>
+          <span class="hint inline" id="scan-hint"></span>
+        </div>
+      </div>
+    </div>
+    <footer class="sheet-foot">
+      <button class="btn" data-close>Close</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ─────────────────────────  bridge help  ───────────────────────── -->
+<div class="modal" id="modal-help" hidden>
+  <div class="sheet">
+    <header class="sheet-head">
+      <strong>Running the scanning bridge</strong>
+      <button class="icon-btn" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <div class="sheet-body">
+      <p>The bridge is a tiny Node script with no dependencies. It discovers scanners over Bonjour
+      (<code>_uscan._tcp</code>) and performs eSCL scans — the same driverless protocol macOS
+      AirScan and SANE’s <code>escl</code> backend use.</p>
+      <ol class="steps">
+        <li>Download <code>bridge/scanlet-bridge.mjs</code> from this repository.</li>
+        <li><code>node scanlet-bridge.mjs</code></li>
+        <li>Leave it running and press <em>Connect</em> above.</li>
+      </ol>
+      <pre class="code" id="help-cmd">node scanlet-bridge.mjs</pre>
+      <p class="hint">The bridge only listens on <code>127.0.0.1</code> and only ever talks to printers on
+      your local network. Scanlet itself still runs entirely in this tab.</p>
+      <button class="btn" id="help-copy">Copy command</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────────────  export  ───────────────────────── -->
+<div class="modal" id="modal-export" hidden>
+  <div class="sheet wide">
+    <header class="sheet-head">
+      <strong>Export PDF</strong>
+      <div class="sheet-head-actions">
+        <button class="btn sm" id="exp-preset-scan">Preset: scanned doc</button>
+        <button class="btn sm" id="exp-preset-archive">Preset: archive</button>
+        <button class="btn sm" id="exp-preset-small">Preset: smallest</button>
+        <button class="icon-btn" data-close aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+    </header>
+    <div class="sheet-body export-body">
+      <div class="exp-col">
+        <div class="field">
+          <label for="exp-filename">File name</label>
+          <input class="input" id="exp-filename" spellcheck="false" />
+        </div>
+        <div class="field">
+          <label for="exp-pagesize">Page size</label>
+          <select class="input" id="exp-pagesize">
+            <option value="fit">Fit to content (no scaling)</option>
+            <option value="A4" selected>A4 (210 × 297 mm)</option>
+            <option value="Letter">US Letter (8.5 × 11 in)</option>
+            <option value="Legal">US Legal (8.5 × 14 in)</option>
+            <option value="A5">A5</option>
+            <option value="A3">A3</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="exp-orientation">Orientation</label>
+          <select class="input" id="exp-orientation">
+            <option value="auto">Auto (per page)</option>
+            <option value="portrait">Portrait</option>
+            <option value="landscape">Landscape</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="exp-margin">Margin <output id="exp-margin-out">0 mm</output></label>
+          <input type="range" id="exp-margin" min="0" max="40" value="0" step="1" />
+        </div>
+        <div class="field">
+          <label for="exp-layout">Layout</label>
+          <select class="input" id="exp-layout">
+            <option value="1">1 page per sheet</option>
+            <option value="2">2-up (two pages per sheet)</option>
+            <option value="4">4-up</option>
+            <option value="2l">2-up, landscape book</option>
+          </select>
+        </div>
+        <label class="check"><input type="checkbox" id="exp-back2back" /> <span>Duplicate pages for back-to-back (booklet)</span></label>
+      </div>
+
+      <div class="exp-col">
+        <div class="field">
+          <label for="exp-quality">Image quality <output id="exp-quality-out">82</output></label>
+          <input type="range" id="exp-quality" min="30" max="100" value="82" step="1" />
+        </div>
+        <div class="field">
+          <label for="exp-imageformat">Image encoding</label>
+          <select class="input" id="exp-imageformat">
+            <option value="image/jpeg">JPEG (smaller)</option>
+            <option value="image/png">PNG (lossless)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="exp-maxdpi">Downsample to at most</label>
+          <select class="input" id="exp-maxdpi">
+            <option value="0">Keep original resolution</option>
+            <option value="150">150 dpi</option>
+            <option value="200">200 dpi</option>
+            <option value="300" selected>300 dpi</option>
+            <option value="600">600 dpi</option>
+          </select>
+        </div>
+        <label class="check"><input type="checkbox" id="exp-searchable" checked /> <span>Add OCR text layer (searchable PDF)</span></label>
+        <label class="check"><input type="checkbox" id="exp-pagenumbers" /> <span>Page numbers</span></label>
+        <label class="check"><input type="checkbox" id="exp-watermark" /> <span>Watermark</span></label>
+        <input class="input" id="exp-watermark-text" placeholder="CONFIDENTIAL" value="CONFIDENTIAL" />
+        <label class="check"><input type="checkbox" id="exp-bookmarks" checked /> <span>Bookmarks (one per page)</span></label>
+        <label class="check"><input type="checkbox" id="exp-metadata" checked /> <span>Write document metadata</span></label>
+      </div>
+
+      <div class="exp-col">
+        <div class="field">
+          <label for="exp-title">Title</label>
+          <input class="input" id="exp-title" />
+        </div>
+        <div class="field">
+          <label for="exp-author">Author</label>
+          <input class="input" id="exp-author" />
+        </div>
+        <div class="field">
+          <label for="exp-subject">Subject</label>
+          <input class="input" id="exp-subject" />
+        </div>
+        <div class="field">
+          <label for="exp-keywords">Keywords</label>
+          <input class="input" id="exp-keywords" />
+        </div>
+        <div class="field">
+          <label for="exp-language">OCR language</label>
+          <select class="input" id="exp-language"></select>
+        </div>
+        <div class="estimate" id="exp-estimate">Estimate appears here.</div>
+      </div>
+    </div>
+    <footer class="sheet-foot">
+      <label class="check"><input type="checkbox" id="exp-open-after" checked /> <span>Open when finished</span></label>
+      <span class="spacer"></span>
+      <button class="btn" data-close>Cancel</button>
+      <button class="btn primary" id="exp-go">Build PDF</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ─────────────────────────  text  ───────────────────────── -->
+<div class="modal" id="modal-text" hidden>
+  <div class="sheet">
+    <header class="sheet-head">
+      <strong>Recognised text</strong>
+      <div class="sheet-head-actions">
+        <button class="btn sm" id="text-copy">Copy</button>
+        <button class="btn sm" id="text-download">Download .txt</button>
+        <button class="icon-btn" data-close aria-label="Close">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+    </header>
+    <div class="sheet-body">
+      <textarea class="input text-out" id="text-out" spellcheck="false" readonly></textarea>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────────────  progress  ───────────────────────── -->
+<div class="modal" id="modal-progress" hidden>
+  <div class="sheet narrow">
+    <div class="sheet-body progress-body">
+      <strong id="progress-title">Working…</strong>
+      <div class="progress"><div class="bar" id="progress-bar"></div></div>
+      <p class="muted" id="progress-detail"></p>
+      <button class="btn" id="progress-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────────────────────  about  ───────────────────────── -->
+<div class="modal" id="modal-about" hidden>
+  <div class="sheet">
+    <header class="sheet-head">
+      <strong>About Scanlet</strong>
+      <button class="icon-btn" data-close aria-label="Close">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <div class="sheet-body">
+      <p><strong>Scanlet</strong> is a document scanner and PDF toolkit that runs entirely in your browser.
+      Pages are captured, cleaned, straightened, OCR’d and assembled into a PDF on this device — there is
+      no server to upload to.</p>
+      <p>It is a static site, so it hosts anywhere: GitHub Pages, an S3 bucket, or a folder on your desk.</p>
+      <ul class="plain">
+        <li>Camera capture with edge detection and perspective correction</li>
+        <li>eSCL / AirScan scanning through an optional local bridge, including ADF and duplex</li>
+        <li>Deskew, shadow removal, adaptive black &amp; white, auto-crop</li>
+        <li>OCR (Tesseract) with a searchable text layer in the exported PDF</li>
+        <li>Multi-page assembly: reorder, split, merge, rotate, annotate, N-up, watermarks, bookmarks</li>
+      </ul>
+      <p class="hint">Third-party libraries: PDF.js, pdf-lib, Tesseract.js and JSZip, loaded from a CDN
+      and cached for offline use by the service worker.</p>
+      <p class="hint" id="about-versions"></p>
+      <div class="btn-row">
+        <button class="btn" id="btn-theme">Toggle theme</button>
+        <button class="btn" id="btn-selftest">Run diagnostics</button>
+      </div>
+      <pre class="code" id="selftest-out" hidden></pre>
+    </div>
+  </div>
+</div>
+
+<input type="file" id="file-input" accept="image/*,.pdf,application/pdf" multiple hidden />
+<input type="file" id="project-input" accept=".zip,.scanlet,application/zip" hidden />
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<div class="sr-only" id="live-region" aria-live="polite"></div>
+</body>
+</html>

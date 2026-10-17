@@ -1,0 +1,33 @@
+{
+  "name": "scanlet",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A private, client-side document scanner and PDF toolkit — camera capture, edge detection, OCR and rich PDF export, all in the browser.",
+  "homepage": "https://lettly.github.io/scanlet/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Lettly/scanlet.git"
+  },
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node bridge/test/bridge.test.mjs",
+    "serve": "python3 -m http.server 8899",
+    "bridge": "node bridge/scanlet-bridge.mjs",
+    "mock-scanner": "node bridge/test/mock-scanner.mjs --render"
+  },
+  "keywords": [
+    "scanner",
+    "pdf",
+    "escl",
+    "airscan",
+    "ocr",
+    "tesseract",
+    "client-side",
+    "privacy",
+    "pwa"
+  ]
+}

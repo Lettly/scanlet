@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# editors
+.vscode/
+.idea/
+*.swp
+
+# logs and scratch
+*.log
+node_modules/
+
+# an unrelated project skeleton that appeared in this working directory;
+# not part of Scanlet, left untouched
+scanstation/
+
+# local tooling left-overs
+.openchamber/
