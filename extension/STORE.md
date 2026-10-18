@@ -91,6 +91,9 @@ telemetry, and no remote code.
 Scanlet itself — the camera capture, the page clean-up, the OCR and the PDF assembly —
 is a separate web app that runs entirely in your browser. This extension only adds the
 printer connection.
+
+It reaches eSCL / AirScan scanners. A scanner with only a vendor driver — a Samsung
+M2070, for example — is handled by the separate Scanlet bridge, not this extension.
 ```
 
 ## Permission justifications

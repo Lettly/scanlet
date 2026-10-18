@@ -157,6 +157,11 @@ Run the bridge with `--name scanlet` and it is reachable at `scanlet.local` too,
 an app served over plain http will guess automatically. Turn it off with
 `--no-advertise`.
 
+The bridge drives **driverless** scanners (eSCL/AirScan) by itself. Run it on a Linux
+host that also has **SANE** (`scanimage` on `PATH`) and it additionally lists and scans
+a scanner that has only a driver — a Samsung M2070, say — through SANE's backends. See
+[`bridge/README.md`](bridge/README.md).
+
 ### Home Assistant
 
 There is an add-on, so the bridge can live on the machine that is already on all the

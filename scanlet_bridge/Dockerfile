@@ -2,7 +2,13 @@
 #
 # The app and the bridge are fetched from a pinned ref rather than copied in, so
 # this folder stays small and the image is reproducible.
-ARG BUILD_FROM=node:20-alpine
+#
+# Debian rather than Alpine, so SANE can be installed: `scanimage` lets the
+# bridge drive a scanner that has only a Linux driver (a Samsung M2070, say),
+# not just a driverless eSCL/AirScan one. `sane-airscan` covers the driverless
+# kind. A vendor driver is not redistributable, so it is the operator's to add
+# (mount it in and point SANE at it) — see README.md.
+ARG BUILD_FROM=debian:bookworm-slim
 FROM ${BUILD_FROM}
 
 ARG SCANLET_REF=main
@@ -12,9 +18,12 @@ ARG SCANLET_REF=main
 # is rebuilt — which is how a rebuild can silently ship last week's code. Bump
 # this with `version:` in config.yaml; scanlet_bridge/test/addon.test.mjs fails
 # the suite if the two drift apart.
-ARG SCANLET_BUILD=1.1.2
+ARG SCANLET_BUILD=1.2.0
 
-RUN apk add --no-cache ca-certificates curl tar \
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl tar nodejs sane-utils sane-airscan \
+ && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /app \
  && echo "app ref ${SCANLET_REF}, add-on build ${SCANLET_BUILD}" > /app/.scanlet-build \
  && curl -fsSL "https://github.com/Lettly/scanlet/archive/${SCANLET_REF}.tar.gz" -o /tmp/scanlet.tgz \

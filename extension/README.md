@@ -98,6 +98,9 @@ The five store secrets it needs, and the manual first-submission steps, are in
 
 ## Limitations
 
+- **eSCL / AirScan scanners only.** The extension speaks the driverless scanning
+  protocol and nothing else, so a scanner that has just a vendor driver — a Samsung
+  M2070, say — is out of reach here. The Scanlet bridge drives those with **SANE**.
 - **Chrome and Edge only.** Firefox has no equivalent of the optional-host-permission
   flow and blocks cross-origin fetches from extension pages differently; use the
   bridge there.

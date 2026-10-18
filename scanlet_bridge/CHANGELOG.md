@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0
+
+- **Driver scanners, via SANE.** The image now carries `scanimage` (`sane-utils`)
+  and `sane-airscan`, so the bridge lists and scans a scanner that has only a
+  Linux driver — a Samsung M2070, say — as well as the driverless eSCL/AirScan
+  kind. A vendor backend (Samsung's own) is not redistributable and stays the
+  operator's to add. The base image moved from Alpine to Debian to carry this.
+
 ## 1.1.2
 
 - **List every device the network advertises again.** Hiding a `_scanner._tcp`

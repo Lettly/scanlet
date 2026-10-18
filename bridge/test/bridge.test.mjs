@@ -24,7 +24,11 @@ import {
   capabilities,
   createResponder,
   createServer,
+  discoverSanePrinters,
   parseMessage,
+  runScan,
+  saneCapabilities,
+  saneRunScan,
   summarise,
   summariseBridges,
 } from '../scanlet-bridge.mjs';
@@ -559,12 +563,87 @@ async function testEsclConfirmation() {
   });
 }
 
+async function testSane() {
+  // A stand-in `scanimage`. A host with SANE would have the real one; this
+  // exercises the bridge's listing, option parsing and scan without hardware.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scanlet-sane-test-'));
+  const fake = path.join(dir, 'scanimage');
+  fs.writeFileSync(
+    fake,
+    [
+      '#!/usr/bin/env node',
+      'const args = process.argv.slice(2);',
+      "if (args.includes('--version')) { console.log('scanimage (sane-backends) 1.1.1'); process.exit(0); }",
+      'if (args.includes(\'-L\')) { console.log("device `test:0\' is a Fake SANE scanner"); process.exit(0); }',
+      "if (args.includes('-A')) {",
+      "  console.log('    --mode Color [Color|Gray|Lineart]');",
+      "  console.log('    --resolution 300dpi [75|150|300|600]');",
+      "  console.log('    --source Flatbed [Flatbed|ADF]');",
+      '  process.exit(0);',
+      '}',
+      'process.stdout.write(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));',
+      '',
+    ].join('\n'),
+  );
+  fs.chmodSync(fake, 0o755);
+  const oldPath = process.env.PATH;
+  process.env.PATH = `${dir}${path.delimiter}${oldPath}`;
+  try {
+    await check('a host with SANE lists its scanner', () => {
+      const found = discoverSanePrinters();
+      assert.equal(found.length, 1);
+      assert.equal(found[0].driver, 'sane');
+      assert.equal(found[0].device, 'test:0');
+      assert.equal(found[0].name, 'Fake SANE');
+    });
+
+    await check('SANE options are read and mapped to what the UI offers', async () => {
+      const caps = await saneCapabilities({ driver: 'sane', device: 'test:0' });
+      assert.deepEqual(caps.resolutions, [75, 150, 300, 600]);
+      assert.ok(caps.colorModes.includes('RGB24'));
+      assert.ok(caps.colorModes.includes('BlackAndWhite1'));
+      assert.ok(caps.sources.includes('Platen'));
+      assert.ok(caps.sources.includes('Feeder'));
+    });
+
+    await check('a SANE scan comes back as one image page', async () => {
+      const pages = await saneRunScan({ driver: 'sane', device: 'test:0' }, { resolution: 300, colorMode: 'RGB24' });
+      assert.equal(pages.length, 1);
+      assert.equal(pages[0].mime, 'image/png');
+      assert.deepEqual([...pages[0].body.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    });
+
+    await check('capabilities() and runScan() dispatch to SANE for a driver device', async () => {
+      const printer = { id: 'sane:test:0', driver: 'sane', device: 'test:0' };
+      const caps = await capabilities(printer);
+      assert.ok(caps.resolutions.includes(300));
+      const pages = await runScan(printer, {});
+      assert.equal(pages.length, 1);
+    });
+
+    await check('the bridge serves SANE scanners through /printers', async () => {
+      const server = createServer({ log: () => {} });
+      const port = await listen(server);
+      try {
+        const body = await fetch(`http://127.0.0.1:${port}/printers`).then((response) => response.json());
+        assert.ok(body.printers.some((printer) => printer.id === 'sane:test:0' && printer.driver === 'sane'));
+      } finally {
+        server.close();
+      }
+    });
+  } finally {
+    process.env.PATH = oldPath;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function main() {
   await testPrivate();
   await testSingleUrl();
   await testLan();
   await testDiscovery();
   await testEsclConfirmation();
+  await testSane();
 
   let failed = 0;
   for (const result of results) {

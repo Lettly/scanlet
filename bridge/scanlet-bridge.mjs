@@ -30,11 +30,11 @@ import dgram from 'node:dgram';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-const VERSION = '1.2.2';
+const VERSION = '1.3.0';
 const MDNS_ADDR = '224.0.0.251';
 const MDNS_PORT = 5353;
 const SERVICE_TYPES = ['_uscan._tcp.local', '_uscans._tcp.local', '_scanner._tcp.local'];
@@ -547,6 +547,7 @@ function sourceMaxima(xml) {
 
 /** Read ScannerCapabilities and boil it down to what the UI needs. */
 export async function capabilities(printer, { timeout = 12000 } = {}) {
+  if (printer.driver === 'sane') return saneCapabilities(printer);
   const response = await httpRequest(`${baseUrl(printer)}/ScannerCapabilities`, { timeout });
   if (response.status !== 200) {
     throw new Error(`The scanner refused to describe itself (HTTP ${response.status}).`);
@@ -613,6 +614,7 @@ ${regions}  <pwg:InputSource>${inputSource}</pwg:InputSource>
 
 /** Create a scan job and collect every page it produces (an ADF can yield many). */
 export async function runScan(printer, options = {}) {
+  if (printer.driver === 'sane') return saneRunScan(printer, options);
   const caps = options.caps || (await capabilities(printer));
   const xml = scanSettingsXml(printer, options, caps);
   const created = await httpRequest(`${baseUrl(printer)}/ScanJobs`, {
@@ -643,6 +645,127 @@ export async function runScan(printer, options = {}) {
   }
   if (!pages.length) throw new Error('The scanner produced no pages.');
   return pages;
+}
+
+/* ───────────────────────────── SANE (driver scanners) ───────────────────────────── */
+
+/**
+ * A scanner with no driverless interface — a Samsung M2070, say — is reachable
+ * only through a driver. On Linux that is SANE, so when `scanimage` is on PATH
+ * the bridge borrows it: SANE's backends do the talking and this only lists,
+ * reads options and runs a scan. Entirely optional — with no `scanimage`, or no
+ * backend for the device, none of this fires.
+ */
+
+/** SANE's names for the choices the UI offers in eSCL's spelling, and back. */
+const SANE_MODE = { RGB24: 'Color', Grayscale8: 'Gray', BlackAndWhite1: 'Lineart' };
+const SANE_MODE_BACK = { Color: 'RGB24', Gray: 'Grayscale8', Lineart: 'BlackAndWhite1' };
+const SANE_SOURCE = { Platen: 'Flatbed', Feeder: 'ADF' };
+const SANE_SOURCE_BACK = { Flatbed: 'Platen', ADF: 'Feeder' };
+
+function scanimage(args, { timeout = 60_000, asBuffer = false } = {}) {
+  return spawnSync('scanimage', args, {
+    timeout,
+    maxBuffer: 128 * 1024 * 1024,
+    encoding: asBuffer ? 'buffer' : 'utf8',
+  });
+}
+
+/** True when this host has SANE's `scanimage`. */
+export function saneAvailable() {
+  const result = scanimage(['--version'], { timeout: 4000 });
+  return result.status === 0 || /scanimage/i.test(`${result.stdout || ''}${result.stderr || ''}`);
+}
+
+/** The scanners SANE knows about, shaped like every other printer. */
+export function discoverSanePrinters() {
+  if (!saneAvailable()) return [];
+  const result = scanimage(['-L'], { timeout: 10_000 });
+  const text = `${result.stdout || ''}${result.stderr || ''}`;
+  const printers = [];
+  for (const match of text.matchAll(/device `([^']+)' is a (.+?) scanner/gi)) {
+    const device = match[1];
+    const model = match[2].trim();
+    printers.push({
+      id: `sane:${device}`,
+      name: model,
+      model,
+      note: 'via SANE driver',
+      driver: 'sane',
+      device,
+      address: device,
+      port: 0,
+      path: '',
+      secure: false,
+      tls: false,
+      resolutions: [],
+      colorModes: [],
+      formats: [],
+      duplex: false,
+    });
+  }
+  return printers;
+}
+
+/** Read the options a device supports out of `scanimage -A`. */
+export async function saneCapabilities(printer) {
+  const result = scanimage(['-d', printer.device, '-A'], { timeout: 15_000 });
+  const text = `${result.stdout || ''}${result.stderr || ''}`;
+  if (result.status !== 0 && !/--\w/.test(text)) {
+    throw new Error('SANE could not describe this scanner — is a driver installed for it?');
+  }
+  const choices = (name) => {
+    const match = new RegExp(`--${name}\\s+\\S+\\s*\\[([^\\]]*)\\]`, 'i').exec(text);
+    return match ? match[1].split('|').map((value) => value.trim()).filter(Boolean) : [];
+  };
+  const resolutions = [...new Set(choices('resolution').map(Number).filter(Boolean))].sort((a, b) => a - b);
+  const colorModes = [...new Set(choices('mode').map((mode) => SANE_MODE_BACK[mode]).filter(Boolean))];
+  const sources = [...new Set(choices('source').map((source) => SANE_SOURCE_BACK[source]).filter(Boolean))];
+  return {
+    sources: sources.length ? sources : ['Platen'],
+    colorModes: colorModes.length ? colorModes : ['RGB24', 'Grayscale8'],
+    formats: ['image/png', 'image/jpeg'],
+    resolutions: resolutions.length ? resolutions : [75, 150, 200, 300, 600],
+    duplex: /--duplex\b/i.test(text),
+    maxima: {},
+    maxWidth: 2550,
+    maxHeight: 3300,
+  };
+}
+
+/** Run a scan through SANE, one image per page. */
+export async function saneRunScan(printer, options = {}) {
+  const resolution = Number(options.resolution) || 300;
+  const mode = SANE_MODE[options.colorMode] || 'Color';
+  const source = SANE_SOURCE[options.inputSource] || 'Flatbed';
+  const jpeg = options.format === 'image/jpeg';
+  const format = jpeg ? 'jpeg' : 'png';
+  const mime = jpeg ? 'image/jpeg' : 'image/png';
+  const base = ['-d', printer.device, '--format', format, '--resolution', String(resolution), '--mode', mode, '--source', source];
+
+  // A feeder can yield many sheets, so batch to files until it runs dry.
+  if (options.inputSource === 'Feeder') {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'scanlet-sane-'));
+    try {
+      const result = scanimage(
+        [...base, `--batch=${path.join(dir, 'page-%d.' + (jpeg ? 'jpg' : 'png'))}`],
+        { timeout: 180_000 },
+      );
+      const files = fs.readdirSync(dir).sort();
+      if (!files.length) {
+        throw new Error(String(result.stderr || '').trim() || 'The scanner produced no pages.');
+      }
+      return files.map((name) => ({ body: fs.readFileSync(path.join(dir, name)), mime }));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  const result = scanimage(base, { timeout: 180_000, asBuffer: true });
+  if (result.status !== 0 || !result.stdout || !result.stdout.length) {
+    throw new Error(String(result.stderr || '').trim() || 'The scanner produced no image.');
+  }
+  return [{ body: result.stdout, mime }];
 }
 
 /**
@@ -796,7 +919,8 @@ export function createHandler({ log = () => {}, appDir = '', lan = false, port =
     // Everything the network advertises is listed. A device that turns out not
     // to answer eSCL is still shown — it is on the network, and hiding it just
     // makes it look lost; selecting it says plainly why it cannot be scanned.
-    const printers = summarise(records);
+    // A host with SANE adds its own driver-backed scanners alongside.
+    const printers = [...summarise(records), ...discoverSanePrinters()];
     cache = { at: Date.now(), printers, caps: cache.caps };
     log(`discovered ${printers.length} device(s)`);
     return printers;
@@ -1187,6 +1311,7 @@ function main() {
       console.log('Open Scanlet, press “Scanner”, then “Connect”.');
     }
     log('looking for scanners over Bonjour…');
+    if (saneAvailable()) log('SANE is here — its driver-backed scanners are listed too');
     discover({ timeout: 2500 })
       .then((records) => {
         const printers = summarise(records);

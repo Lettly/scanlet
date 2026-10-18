@@ -21,6 +21,9 @@ that bridge, without a second machine to keep running.
 - **Bonjour discovery**, so the bridge can be found without reading logs. It advertises
   `_scanlet._tcp` on your network, and answers on the Home Assistant host as well —
   usually `http://homeassistant.local:8787/`.
+- **Driver scanners, through SANE.** The image carries `scanimage` and
+  `sane-airscan`, so a scanner with only a Linux driver — not a driverless
+  eSCL/AirScan one — is listed and scanned too.
 
 ## Using it
 
@@ -30,6 +33,19 @@ that bridge, without a second machine to keep running.
 
 If no printer appears, add it by address — every eSCL/AirScan device on your network
 will answer at `192.168.x.y` or `192.168.x.y:80`.
+
+### Scanners that need a driver
+
+A scanner with no eSCL/AirScan interface (a Samsung M2070, for one) is reachable only
+through a driver. On Linux that is **SANE**, and the image ships it (`scanimage` plus
+`sane-airscan` for the driverless kind). Any scanner SANE knows about shows up in the
+list alongside the eSCL ones.
+
+SANE only knows a device if a **backend** for it is installed, and a *vendor* backend —
+Samsung's own, say — is not redistributable, so it is yours to add: mount the backend
+and its config into the add-on (for example under `/share/sane`) and point SANE at it,
+e.g. `SANE_CONFIG_DIR` and `/etc/sane.d/dll.conf` naming the backend. Everything that
+is already in `sane-backends` (`xerox_mfp`, `epsonds`, `pixma`, …) works out of the box.
 
 ### No pairing, by design
 

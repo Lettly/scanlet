@@ -20,6 +20,23 @@ protocol Apple AirScan and SANE's `escl` backend use. No vendor drivers, no SDKs
 It binds to `127.0.0.1` only, talks only to printers on the local network, and
 keeps nothing on disk.
 
+### Driver scanners (optional)
+
+A scanner with no eSCL/AirScan interface — a Samsung M2070, for one — is reachable
+only through a driver, and on Linux that is **SANE**. When `scanimage` is on `PATH`
+the bridge borrows it: it lists the scanners SANE knows (`scanimage -L`), reads
+their options (`scanimage -A`) and runs a scan (`scanimage`), exposing them as
+ordinary printers with `driver: "sane"`. A feeder batches to files until it runs
+dry; a flatbed returns one image.
+
+```sh
+apt install sane-utils sane-airscan     # scanimage + the driverless backends
+scanimage -L                            # what SANE can see
+```
+
+Without `scanimage` — or a backend for the device — nothing changes. A vendor
+backend is not redistributable, so it is yours to install.
+
 ## API
 
 | Method | Path | Purpose |
@@ -30,9 +47,10 @@ keeps nothing on disk.
 | `GET` | `/printers/:id/capabilities` | normalised sources, colour modes, resolutions, duplex |
 | `POST` | `/printers/:id/scan` | run a job; responds with one image part per page |
 
-Scan options: `resolution`, `colorMode` (`RGB24` / `Grayscale8` /
-`BlackAndWhite1`), `inputSource` (`Platen` / `Feeder`), `duplex`, `format`,
-`pageSize`.
+A device from SANE has `driver: "sane"` and an id of the form `sane:<device>`; the
+route is the same. Scan options: `resolution`, `colorMode` (`RGB24` /
+`Grayscale8` / `BlackAndWhite1`), `inputSource` (`Platen` / `Feeder`), `duplex`,
+`format`, `pageSize`.
 
 The scan response is `multipart/mixed`, one part per page, so a multi-sheet ADF job
 arrives as a single response. Every route answers CORS preflights — including
