@@ -1557,6 +1557,17 @@ async function selectPrinter(printer) {
     fillScannerOptions(caps);
     setScanHint('');
   } catch (error) {
+    // A device that is not really a driverless scanner — the bridge says so
+    // plainly — is remembered as unscannable, so the list stops offering it.
+    if (/not a driverless scanner|did not answer with eSCL/i.test(error.message)) {
+      printer.scannable = false;
+      ui.scanner.list.querySelector(`[data-printer-id="${CSS.escape(printer.id)}"]`)?.remove();
+      addPrinter(printer);
+      scannerState.printer = null;
+      ui.scanner.options.hidden = true;
+      setScanHint('This device does not answer AirScan/eSCL, so it cannot be scanned here.');
+      return;
+    }
     setScanHint(error.message);
   }
 }
