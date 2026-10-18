@@ -1,11 +1,13 @@
 # Changelog
 
+## 1.1.2
+
+- **List every device the network advertises again.** Hiding a `_scanner._tcp`
+  device that does not answer eSCL made a working printer look lost; it is shown
+  again, and selecting it explains plainly that it is not a driverless scanner.
+
 ## 1.1.1
 
-- **Only offer a scanner it can actually drive.** A `_scanner._tcp` advert is
-  only a guess at eSCL — some devices publish it for their own protocol (a
-  Samsung M2070 does) — so the bridge now confirms each such device answers
-  eSCL before listing it.
 - A device that answers with a non-HTTP protocol no longer surfaces Node's
   cryptic *"Parse Error: Expected HTTP/, RTSP/ or ICE/"*; it is reported as not
   being a driverless scanner.

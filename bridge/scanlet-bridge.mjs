@@ -34,7 +34,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-const VERSION = '1.2.1';
+const VERSION = '1.2.2';
 const MDNS_ADDR = '224.0.0.251';
 const MDNS_PORT = 5353;
 const SERVICE_TYPES = ['_uscan._tcp.local', '_uscans._tcp.local', '_scanner._tcp.local'];
@@ -790,37 +790,13 @@ export function createHandler({ log = () => {}, appDir = '', lan = false, port =
   let cache = { at: 0, printers: [], caps: new Map() };
   const manual = new Map(); // id → printer, added by address
 
-  /**
-   * `_uscan`/`_uscans` are the eSCL services, so those devices are taken at
-   * their word. A `_scanner._tcp` advert is only a guess — some devices (a
-   * Samsung M2070, say) publish it for their own binary protocol — so confirm
-   * each one really answers eSCL before offering it, rather than advertising a
-   * device that then fails with "not a driverless scanner".
-   */
-  const confirmEscl = async (printers) => {
-    const kept = [];
-    await Promise.all(
-      printers.map(async (printer) => {
-        if (printer.service !== '_scanner._tcp.local') {
-          kept.push(printer);
-          return;
-        }
-        try {
-          const caps = await capabilities(printer, { timeout: 3000 });
-          cache.caps.set(printer.id, caps);
-          kept.push(printer);
-        } catch (error) {
-          log(`skipping ${printer.address}:${printer.port} — ${error.message}`);
-        }
-      }),
-    );
-    return kept;
-  };
-
   const listPrinters = async ({ force = false } = {}) => {
     if (!force && Date.now() - cache.at < 15000 && cache.printers.length) return cache.printers;
     const records = await discover();
-    const printers = await confirmEscl(summarise(records));
+    // Everything the network advertises is listed. A device that turns out not
+    // to answer eSCL is still shown — it is on the network, and hiding it just
+    // makes it look lost; selecting it says plainly why it cannot be scanned.
+    const printers = summarise(records);
     cache = { at: Date.now(), printers, caps: cache.caps };
     log(`discovered ${printers.length} device(s)`);
     return printers;
