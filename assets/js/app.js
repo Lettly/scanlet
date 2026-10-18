@@ -1509,21 +1509,35 @@ function renderPrinterList(printers) {
 function addPrinter(printer) {
   ui.scanner.listWrap.hidden = false;
   if (ui.scanner.list.querySelector(`[data-printer-id="${CSS.escape(printer.id)}"]`)) return;
+  // A device the bridge found but proved is not eSCL/AirScan stays in the list —
+  // it is on the network — but cannot be picked, and says why.
+  const unsupported = printer.scannable === false;
+  const meta = [
+    printer.model,
+    printer.address && `${printer.address}${printer.port ? `:${printer.port}` : ''}`,
+    printer.manual
+      ? 'added by address'
+      : unsupported
+        ? 'found, but not an AirScan/eSCL scanner'
+        : printer.found
+          ? 'found on this network'
+          : 'Bonjour',
+  ].filter(Boolean).join(' · ');
   const item = el('div', {
-    class: 'printer-item',
+    class: `printer-item${unsupported ? ' muted' : ''}`,
     role: 'button',
-    tabindex: '0',
+    tabindex: unsupported ? undefined : '0',
     dataset: { printerId: printer.id },
     'aria-pressed': String(scannerState.printer?.id === printer.id),
-    onclick: () => selectPrinter(printer),
+    'aria-disabled': unsupported ? 'true' : undefined,
+    onclick: unsupported
+      ? () => setScanHint('This device does not answer AirScan/eSCL, so it cannot be scanned here.')
+      : () => selectPrinter(printer),
   }, [
     el('span', { html: '<svg viewBox="0 0 24 24"><path d="M6 9V4h12v5M6 18H5a2 2 0 01-2-2v-5a2 2 0 012-2h14a2 2 0 012 2v5a2 2 0 01-2 2h-1M6 15h12v6H6z"/></svg>' }),
     el('span', {}, [
       el('div', { class: 'p-name' }, printer.name || printer.address),
-      el('div', { class: 'p-meta' },
-        [printer.model, printer.address && `${printer.address}:${printer.port}`,
-          printer.manual ? 'added by address' : printer.found ? 'found on this network' : 'Bonjour']
-          .filter(Boolean).join(' · ')),
+      el('div', { class: 'p-meta' }, meta),
     ]),
   ]);
   ui.scanner.list.append(item);

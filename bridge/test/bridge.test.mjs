@@ -25,6 +25,7 @@ import {
   createResponder,
   createServer,
   discoverSanePrinters,
+  markScannable,
   parseMessage,
   runScan,
   saneCapabilities,
@@ -560,6 +561,28 @@ async function testEsclConfirmation() {
     } finally {
       server.close();
     }
+  });
+
+  await check('a device that does not answer eSCL is flagged, not dropped', async () => {
+    const printers = [
+      { id: 'uscan', service: '_uscan._tcp.local' },
+      { id: 'scanner-ok', service: '_scanner._tcp.local' },
+      { id: 'scanner-no', service: '_scanner._tcp.local' },
+      { id: 'sane', driver: 'sane' },
+    ];
+    const probe = async (printer) => {
+      if (printer.id === 'scanner-no') {
+        throw new Error('The device did not answer with eSCL/AirScan — it is not a driverless scanner.');
+      }
+      return {};
+    };
+    const out = Object.fromEntries((await markScannable(printers, probe)).map((printer) => [printer.id, printer]));
+    assert.equal(out.uscan.scannable, true, 'an _uscan device is eSCL by definition');
+    assert.equal(out.sane.scannable, true, 'a SANE device is already known to work');
+    assert.equal(out['scanner-ok'].scannable, true, 'a _scanner device that answers eSCL is fine');
+    assert.equal(out['scanner-no'].scannable, false, 'one that does not is flagged');
+    assert.match(out['scanner-no'].reason, /driverless/);
+    assert.equal(printers.length, 4, 'nothing is dropped from the list');
   });
 }
 

@@ -385,6 +385,8 @@ kbd {
 .printer-item[aria-pressed="true"] { border-color: var(--brand); background: var(--brand-soft); }
 .printer-item .p-name { font-weight: 600; }
 .printer-item .p-meta { font-size: 11.5px; color: var(--muted); }
+.printer-item.muted { opacity: .6; cursor: default; }
+.printer-item.muted:hover { background: var(--surface); }
 .qr-row { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
 .qr-row img { border-radius: var(--radius-sm); background: #fff; padding: 8px; border: 1px solid var(--border); }
 .qr-text { flex: 1 1 220px; min-width: 0; }

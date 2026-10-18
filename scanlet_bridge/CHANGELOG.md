@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.1
+
+- **No more "not a driverless scanner" surprise.** A device the bridge finds but
+  proves cannot answer eSCL (some publish `_scanner._tcp` for their own protocol)
+  stays in the list, greyed, with the reason — instead of failing when it is
+  picked.
+
 ## 1.2.0
 
 - **Driver scanners, via SANE.** The image now carries `scanimage` (`sane-utils`)

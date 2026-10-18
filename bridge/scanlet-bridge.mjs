@@ -34,7 +34,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-const VERSION = '1.3.0';
+const VERSION = '1.3.1';
 const MDNS_ADDR = '224.0.0.251';
 const MDNS_PORT = 5353;
 const SERVICE_TYPES = ['_uscan._tcp.local', '_uscans._tcp.local', '_scanner._tcp.local'];
@@ -465,6 +465,39 @@ export function summarise(records) {
     seen.add(key);
     return true;
   });
+}
+
+/**
+ * Work out which of the discovered devices can actually be scanned, without
+ * dropping the ones that cannot.
+ *
+ * A `_scanner._tcp` advert is only a guess at eSCL — some devices publish it for
+ * their own protocol (a Samsung M2070 does), and then answer an eSCL request with
+ * something that is not HTTP. Such a device is left in the list, because it *is*
+ * on the network and hiding it just makes it look lost, but it is marked
+ * `scannable: false` so the app can show it greyed with the reason instead of
+ * failing the moment it is picked. `_uscan`/`_uscans` are eSCL by definition and
+ * a SANE device is already known to work, so both are taken at their word.
+ *
+ * `probe` exists for the tests; it defaults to reading the device's capabilities.
+ */
+export async function markScannable(printers, probe = capabilities) {
+  await Promise.all(
+    printers.map(async (printer) => {
+      if (printer.driver === 'sane' || printer.service !== '_scanner._tcp.local') {
+        printer.scannable = true;
+        return;
+      }
+      try {
+        await probe(printer, { timeout: 3000 });
+        printer.scannable = true;
+      } catch (error) {
+        printer.scannable = false;
+        printer.reason = error.message;
+      }
+    }),
+  );
+  return printers;
 }
 
 /* ───────────────────────────── eSCL client ───────────────────────────── */
@@ -916,11 +949,13 @@ export function createHandler({ log = () => {}, appDir = '', lan = false, port =
   const listPrinters = async ({ force = false } = {}) => {
     if (!force && Date.now() - cache.at < 15000 && cache.printers.length) return cache.printers;
     const records = await discover();
-    // Everything the network advertises is listed. A device that turns out not
-    // to answer eSCL is still shown — it is on the network, and hiding it just
-    // makes it look lost; selecting it says plainly why it cannot be scanned.
-    // A host with SANE adds its own driver-backed scanners alongside.
-    const printers = [...summarise(records), ...discoverSanePrinters()];
+    // Everything the network advertises is listed; a device that turns out not
+    // to answer eSCL is kept but flagged `scannable: false`, so the app shows it
+    // greyed with the reason rather than failing when it is picked. A host with
+    // SANE adds its own driver-backed scanners alongside.
+    const printers = await markScannable([...summarise(records), ...discoverSanePrinters()], async (printer, options) => {
+      cache.caps.set(printer.id, await capabilities(printer, options));
+    });
     cache = { at: Date.now(), printers, caps: cache.caps };
     log(`discovered ${printers.length} device(s)`);
     return printers;
