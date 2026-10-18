@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.2
+
+- **USB scanners, too.** `usb: true` maps the host's USB devices into the
+  add-on, so a scanner that has only a driver and connects over USB — a Samsung
+  M2070, which SANE knows as `usb 0x04e8 0x3469` — is driven through `scanimage`
+  and shows up in Scanlet. (Over the network that model has no eSCL/WSD and no
+  SANE backend, so USB is the only way it can be scanned.)
+
 ## 1.2.1
 
 - **No more "not a driverless scanner" surprise.** A device the bridge finds but

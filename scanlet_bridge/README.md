@@ -47,6 +47,12 @@ and its config into the add-on (for example under `/share/sane`) and point SANE 
 e.g. `SANE_CONFIG_DIR` and `/etc/sane.d/dll.conf` naming the backend. Everything that
 is already in `sane-backends` (`xerox_mfp`, `epsonds`, `pixma`, …) works out of the box.
 
+Some of those devices are reachable only over **USB** — a Samsung M2070 is SANE's
+`usb 0x04e8 0x3469`, and nothing drives it over the network (no eSCL/WSD, no SANE
+network backend). The add-on maps the host's USB devices in (`usb: true`), so plug the
+scanner into the Home Assistant machine and it appears in Scanlet. Connect it by USB
+*as well as* the network if you still want to print over the network.
+
 ### No pairing, by design
 
 There is no pairing code. Opening the sidebar panel connects straight to the bridge,

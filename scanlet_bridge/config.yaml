@@ -1,5 +1,5 @@
 name: Scanlet Bridge
-version: "1.2.1"
+version: "1.2.2"
 slug: scanlet_bridge
 description: Run the Scanlet scanning bridge on your network, and scan from a printer
 url: https://github.com/Lettly/scanlet/tree/main/scanlet_bridge
@@ -14,6 +14,10 @@ init: false
 # has to reach printers wherever they are on the network. Both need the host's
 # network namespace.
 host_network: true
+# A scanner with only a driver is driven through SANE (`scanimage`). Some of
+# those — a Samsung M2070, for one — are reachable only over USB, so the host's
+# USB devices are mapped in too; without them SANE sees nothing.
+usb: true
 ingress: true
 ingress_port: 8099
 panel_icon: mdi:scanner
