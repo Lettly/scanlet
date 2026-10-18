@@ -1,5 +1,5 @@
 name: Scanlet Bridge
-version: "1.1.0"
+version: "1.1.1"
 slug: scanlet_bridge
 description: Run the Scanlet scanning bridge on your network, and scan from a printer
 url: https://github.com/Lettly/scanlet/tree/main/scanlet_bridge

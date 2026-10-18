@@ -14,15 +14,18 @@
 import assert from 'node:assert/strict';
 import dgram from 'node:dgram';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createMockScanner } from './mock-scanner.mjs';
 import {
   buildAnnouncement,
+  capabilities,
   createResponder,
   createServer,
   parseMessage,
+  summarise,
   summariseBridges,
 } from '../scanlet-bridge.mjs';
 import { BridgeClient } from '../../assets/js/bridge.js';
@@ -518,11 +521,50 @@ async function testDiscovery() {
   });
 }
 
+async function testEsclConfirmation() {
+  await check('summarise tags each printer with its Bonjour service', () => {
+    const records = [
+      { type: 12, name: '_uscan._tcp.local', value: 'A._uscan._tcp.local' },
+      { type: 33, name: 'A._uscan._tcp.local', value: { port: 80, target: 'a.local' } },
+      { type: 16, name: 'A._uscan._tcp.local', value: { ty: 'AirScan printer' } },
+      { type: 1, name: 'a.local', value: '10.0.0.5' },
+      { type: 12, name: '_scanner._tcp.local', value: 'B._scanner._tcp.local' },
+      { type: 33, name: 'B._scanner._tcp.local', value: { port: 9400, target: 'b.local' } },
+      { type: 16, name: 'B._scanner._tcp.local', value: { ty: 'Samsung' } },
+      { type: 1, name: 'b.local', value: '10.0.0.6' },
+    ];
+    const printers = Object.fromEntries(summarise(records).map((printer) => [printer.name, printer]));
+    assert.equal(printers['AirScan printer'].service, '_uscan._tcp.local');
+    assert.equal(printers['Samsung'].service, '_scanner._tcp.local');
+  });
+
+  await check('a device that answers with a non-HTTP protocol is named as such', async () => {
+    // The Samsung M2070 way: it accepts the connection, then writes its own
+    // binary protocol, which Node's HTTP parser rejects with a cryptic
+    // "Parse Error: Expected HTTP/, RTSP/ or ICE/".
+    const server = net.createServer((socket) => socket.write(Buffer.from([0xa8, 0x08, 0x43, 0x00])));
+    const port = await new Promise((resolve) => {
+      server.listen(0, '127.0.0.1', () => resolve(server.address().port));
+    });
+    try {
+      const error = await capabilities({ address: '127.0.0.1', port, path: '/eSCL', tls: false }).then(
+        () => null,
+        (caught) => caught,
+      );
+      assert.ok(error, 'expected capabilities to reject');
+      assert.match(error.message, /did not answer with eSCL/);
+    } finally {
+      server.close();
+    }
+  });
+}
+
 async function main() {
   await testPrivate();
   await testSingleUrl();
   await testLan();
   await testDiscovery();
+  await testEsclConfirmation();
 
   let failed = 0;
   for (const result of results) {

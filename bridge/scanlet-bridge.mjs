@@ -34,7 +34,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 const MDNS_ADDR = '224.0.0.251';
 const MDNS_PORT = 5353;
 const SERVICE_TYPES = ['_uscan._tcp.local', '_uscans._tcp.local', '_scanner._tcp.local'];
@@ -443,6 +443,9 @@ export function summarise(records) {
       name: properties.ty || instance.replace(/\._uscans?\._tcp$|\._scanner\._tcp$/, '').replace(/\.local$/, ''),
       model: properties.ty || '',
       note: properties.note || '',
+      // Which Bonjour service it came from. `_uscan`/`_uscans` are eSCL by
+      // definition; `_scanner` is a guess worth confirming before we offer it.
+      service,
       address,
       port: target.port || (secure ? 443 : 80),
       path: '/eSCL',
@@ -498,7 +501,17 @@ function httpRequest(url, { method = 'GET', headers = {}, body = null, timeout =
       },
     );
     request.on('timeout', () => request.destroy(new Error('the scanner did not answer in time')));
-    request.on('error', reject);
+    request.on('error', (error) => {
+      // A device that does not speak HTTP at all (some advertise a legacy
+      // `_scanner._tcp` service on top of their own binary protocol) makes
+      // Node's parser fail with “Parse Error: Expected HTTP/, RTSP/ or ICE/”.
+      // Say what that means instead of leaking the parser's words.
+      if (/parse error|HPE_/i.test(error.message || '')) {
+        reject(new Error('The device did not answer with eSCL/AirScan — it is not a driverless scanner.'));
+      } else {
+        reject(error);
+      }
+    });
     if (body) request.write(body);
     request.end();
   });
@@ -533,8 +546,8 @@ function sourceMaxima(xml) {
 }
 
 /** Read ScannerCapabilities and boil it down to what the UI needs. */
-export async function capabilities(printer) {
-  const response = await httpRequest(`${baseUrl(printer)}/ScannerCapabilities`, { timeout: 12000 });
+export async function capabilities(printer, { timeout = 12000 } = {}) {
+  const response = await httpRequest(`${baseUrl(printer)}/ScannerCapabilities`, { timeout });
   if (response.status !== 200) {
     throw new Error(`The scanner refused to describe itself (HTTP ${response.status}).`);
   }
@@ -777,10 +790,37 @@ export function createHandler({ log = () => {}, appDir = '', lan = false, port =
   let cache = { at: 0, printers: [], caps: new Map() };
   const manual = new Map(); // id → printer, added by address
 
+  /**
+   * `_uscan`/`_uscans` are the eSCL services, so those devices are taken at
+   * their word. A `_scanner._tcp` advert is only a guess — some devices (a
+   * Samsung M2070, say) publish it for their own binary protocol — so confirm
+   * each one really answers eSCL before offering it, rather than advertising a
+   * device that then fails with "not a driverless scanner".
+   */
+  const confirmEscl = async (printers) => {
+    const kept = [];
+    await Promise.all(
+      printers.map(async (printer) => {
+        if (printer.service !== '_scanner._tcp.local') {
+          kept.push(printer);
+          return;
+        }
+        try {
+          const caps = await capabilities(printer, { timeout: 3000 });
+          cache.caps.set(printer.id, caps);
+          kept.push(printer);
+        } catch (error) {
+          log(`skipping ${printer.address}:${printer.port} — ${error.message}`);
+        }
+      }),
+    );
+    return kept;
+  };
+
   const listPrinters = async ({ force = false } = {}) => {
     if (!force && Date.now() - cache.at < 15000 && cache.printers.length) return cache.printers;
     const records = await discover();
-    const printers = summarise(records);
+    const printers = await confirmEscl(summarise(records));
     cache = { at: Date.now(), printers, caps: cache.caps };
     log(`discovered ${printers.length} device(s)`);
     return printers;

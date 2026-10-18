@@ -12,7 +12,7 @@ ARG SCANLET_REF=main
 # is rebuilt — which is how a rebuild can silently ship last week's code. Bump
 # this with `version:` in config.yaml; scanlet_bridge/test/addon.test.mjs fails
 # the suite if the two drift apart.
-ARG SCANLET_BUILD=1.1.0
+ARG SCANLET_BUILD=1.1.1
 
 RUN apk add --no-cache ca-certificates curl tar \
  && mkdir -p /app \
